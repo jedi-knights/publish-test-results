@@ -138,6 +138,13 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
         located = countLocated(all) - before
     }
 
+    // Path resolution: producers often emit File paths relative to the
+    // compile / test cwd (e.g. tests/foo.c under compression/rle/) but
+    // GitHub's Checks API needs paths relative to the repo root. Try a
+    // couple of common prefixes under source-root and rewrite to the
+    // source-root-relative form when we find a real file.
+    resolveFilePaths(all, sourceRoot)
+
     if dryRun {
         printSummary(stdout, all, parserSeen, located)
         return exitOK
@@ -196,6 +203,53 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
         }
     }
     return exitOK
+}
+
+// resolveFilePaths rewrites each result's File so it is relative to
+// source-root. Many producers emit File relative to whatever cwd their
+// test-runner used (e.g. ctestprobe running from compression/rle/
+// stamps `tests/test_rle.c`, not `rle/tests/test_rle.c`). GitHub's
+// annotation API needs paths relative to the checked-out repo root.
+//
+// Strategy: for each result whose File isn't absolute and doesn't
+// already exist at CWD, try prepending `<source-root>/<Suite>/` then
+// `<source-root>/`. First candidate that exists on disk wins; File is
+// rewritten to that candidate's path relative to source-root.
+//
+// Best-effort: results we can't resolve are left as-is. The annotation
+// simply won't render for those, but the check-run summary still lists
+// the test.
+func resolveFilePaths(results []ir.TestResult, sourceRoot string) {
+    for i, r := range results {
+        if r.File == "" || filepath.IsAbs(r.File) {
+            continue
+        }
+        candidates := []string{r.File}
+        if r.Suite != "" {
+            candidates = append(candidates, filepath.Join(sourceRoot, r.Suite, r.File))
+        }
+        if r.Class != "" && r.Class != r.Suite {
+            candidates = append(candidates, filepath.Join(sourceRoot, r.Class, r.File))
+        }
+        candidates = append(candidates, filepath.Join(sourceRoot, r.File))
+
+        for _, c := range candidates {
+            if _, err := os.Stat(c); err != nil {
+                continue
+            }
+            rel, err := filepath.Rel(sourceRoot, c)
+            if err != nil {
+                continue
+            }
+            // Skip candidates that resolve above source-root — those
+            // aren't repo-relative and would confuse GitHub.
+            if strings.HasPrefix(rel, "..") {
+                continue
+            }
+            results[i].File = rel
+            break
+        }
+    }
 }
 
 // countLocated returns how many results have both File and Line set.
