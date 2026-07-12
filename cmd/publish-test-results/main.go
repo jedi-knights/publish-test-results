@@ -59,10 +59,12 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
         headSHA     string
         repoSlug    string
         apiURL      string
-        sourceRoot  string
-        dryRun      bool
-        noLocator   bool
-        showVer     bool
+        sourceRoot     string
+        dryRun         bool
+        noLocator      bool
+        includePassed  bool
+        includeSkipped bool
+        showVer        bool
     )
     fs := flag.NewFlagSet("publish-test-results", flag.ContinueOnError)
     fs.SetOutput(stderr)
@@ -75,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
     fs.StringVar(&sourceRoot, "source-root", ".", "Directory the locator walks to infer file:line for tests without them")
     fs.BoolVar(&dryRun, "dry-run", false, "Parse the files and print a summary without posting to the GitHub API")
     fs.BoolVar(&noLocator, "no-locator", false, "Disable filesystem inference of file:line for tests without source location")
+    fs.BoolVar(&includePassed, "include-passed", false, "Also emit per-test annotations for passing tests (default: failures only)")
+    fs.BoolVar(&includeSkipped, "include-skipped", false, "Also emit per-test annotations for skipped tests (default: failures only)")
     fs.BoolVar(&showVer, "version", false, "Print version and exit")
 
     if err := fs.Parse(args); err != nil {
@@ -169,7 +173,10 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
     resp, err := publish.Publish(context.Background(), client, publish.Config{
         CheckName: checkName,
         HeadSHA:   sha,
-        Options:   publish.DefaultOptions(),
+        Options: publish.Options{
+            IncludePassed:  includePassed,
+            IncludeSkipped: includeSkipped,
+        },
     }, all)
     if err != nil {
         fmt.Fprintf(stderr, "publish failed: %v\n", err)
