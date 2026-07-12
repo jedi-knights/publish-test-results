@@ -20,5 +20,22 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: go test
-        run: go test -race -count=1 ./...
+      - name: Build publish-test-results binary
+        run: go build -o bin/publish-test-results ./cmd/publish-test-results
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
+      - name: Run tests via gotestsum (writes results.xml)
+        run: gotestsum --junitfile=results.xml --format=pkgname -- -race -count=1 ./...
+
+      - name: Upload JUnit XML artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-junit-xml
+          path: results.xml
+
+      - name: Self-parse test results (dogfood the JUnit parser)
+        if: always()
+        run: ./bin/publish-test-results --files=results.xml --dry-run
