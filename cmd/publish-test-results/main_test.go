@@ -544,7 +544,11 @@ func TestSortStrings(t *testing.T) {
     }
 }
 
+// firstNonEmpty in the main package is variadic; the parse package has
+// a differently-signatured binary firstNonEmpty tested in
+// internal/parse/junit_test.go. Do not consolidate.
 func TestFirstNonEmpty(t *testing.T) {
+    // Arrange
     cases := []struct {
         args []string
         want string
@@ -554,6 +558,8 @@ func TestFirstNonEmpty(t *testing.T) {
         {[]string{}, ""},
         {[]string{""}, ""},
     }
+
+    // Act / Assert
     for _, tc := range cases {
         if got := firstNonEmpty(tc.args...); got != tc.want {
             t.Errorf("firstNonEmpty(%v) = %q, want %q", tc.args, got, tc.want)
@@ -592,5 +598,153 @@ func TestSplitRepoSlug(t *testing.T) {
             t.Errorf("splitRepoSlug(%q) = (%q, %q, %v); want (%q, %q, %v)",
                 tc.in, o, r, ok, tc.wantOwner, tc.wantRepo, tc.wantOK)
         }
+    }
+}
+
+func TestResolveFilePaths_LeavesEmptyAndAbsoluteAlone(t *testing.T) {
+    // Arrange — empty File must be left as-is (no path to resolve),
+    // and absolute paths must be left untouched (no assumption about
+    // where an absolute path is anchored).
+    root := t.TempDir()
+    results := []ir.TestResult{
+        {Name: "empty", File: ""},
+        {Name: "abs", File: "/absolute/foo.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    if results[0].File != "" {
+        t.Errorf("empty File was modified: %q", results[0].File)
+    }
+    if results[1].File != "/absolute/foo.go" {
+        t.Errorf("absolute File was rewritten: %q", results[1].File)
+    }
+}
+
+func TestResolveFilePaths_ResolvesSuiteRelativePath(t *testing.T) {
+    // Arrange — producer emitted File relative to the suite's cwd,
+    // e.g. ctestprobe running in compression/rle/ stamps
+    // "tests/test_rle.c". The real file lives at
+    // "<source-root>/compression/rle/tests/test_rle.c".
+    root := t.TempDir()
+    suitePath := filepath.Join(root, "compression", "rle", "tests")
+    if err := os.MkdirAll(suitePath, 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    real := filepath.Join(suitePath, "test_rle.c")
+    if err := os.WriteFile(real, nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    results := []ir.TestResult{
+        {Suite: "compression/rle", File: "tests/test_rle.c"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert — File should now be repo-relative.
+    want := filepath.Join("compression", "rle", "tests", "test_rle.c")
+    if results[0].File != want {
+        t.Errorf("File = %q, want %q", results[0].File, want)
+    }
+}
+
+func TestResolveFilePaths_ResolvesClassRelativePath(t *testing.T) {
+    // Arrange — some producers put the package-like key on Class
+    // rather than Suite. resolveFilePaths tries Class as a separate
+    // candidate when it differs from Suite.
+    root := t.TempDir()
+    classPath := filepath.Join(root, "libs", "codec", "src")
+    if err := os.MkdirAll(classPath, 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    real := filepath.Join(classPath, "codec.go")
+    if err := os.WriteFile(real, nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    results := []ir.TestResult{
+        {Suite: "unrelated", Class: "libs/codec", File: "src/codec.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    want := filepath.Join("libs", "codec", "src", "codec.go")
+    if results[0].File != want {
+        t.Errorf("File = %q, want %q", results[0].File, want)
+    }
+}
+
+func TestResolveFilePaths_ResolvesSourceRootRelativePath(t *testing.T) {
+    // Arrange — File already relative to source-root (e.g. Go test
+    // output). Neither suite nor class prefixes apply.
+    root := t.TempDir()
+    if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    if err := os.WriteFile(filepath.Join(root, "pkg", "thing.go"), nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    results := []ir.TestResult{
+        {File: "pkg/thing.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    want := filepath.Join("pkg", "thing.go")
+    if results[0].File != want {
+        t.Errorf("File = %q, want %q", results[0].File, want)
+    }
+}
+
+func TestResolveFilePaths_RejectsCandidateOutsideSourceRoot(t *testing.T) {
+    // Arrange — a candidate that resolves to a real file outside
+    // source-root must be rejected. `filepath.Rel` would produce a
+    // path like "../sibling.txt" that GitHub cannot render.
+    tmpBase := t.TempDir()
+    innerRoot := filepath.Join(tmpBase, "inner")
+    if err := os.MkdirAll(innerRoot, 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    // Put the real file OUTSIDE innerRoot but reachable via `..`.
+    outside := filepath.Join(tmpBase, "sibling.txt")
+    if err := os.WriteFile(outside, nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    // Suite="..", so a Join(root, Suite, File) candidate resolves to
+    // tmpBase/sibling.txt — outside innerRoot.
+    results := []ir.TestResult{
+        {Suite: "..", File: "sibling.txt"},
+    }
+
+    // Act
+    resolveFilePaths(results, innerRoot)
+
+    // Assert — File must not be rewritten to a "../..." path.
+    if strings.HasPrefix(results[0].File, "..") {
+        t.Errorf("File resolved to escape path %q; expected rejection", results[0].File)
+    }
+}
+
+func TestResolveFilePaths_UnresolvableIsLeftAsIs(t *testing.T) {
+    // Arrange — no candidate exists on disk. resolveFilePaths is
+    // best-effort; unresolved entries are preserved for the summary
+    // table even though annotations for them won't render.
+    root := t.TempDir()
+    results := []ir.TestResult{
+        {Suite: "s", File: "does/not/exist.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    if results[0].File != "does/not/exist.go" {
+        t.Errorf("unresolvable File was modified: %q", results[0].File)
     }
 }

@@ -300,15 +300,20 @@ func TestExtractGoTestLocation(t *testing.T) {
     }
 }
 
-// gotestFailingReader emits a valid line, then a synthetic error on
-// the next Read. Exercises the bufio.Scanner error branch in Parse.
-type gotestFailingReader struct {
+// partialThenErrReader emits buf on the first Read, then returns err
+// on every subsequent Read. Deliberately different from
+// iotest.ErrReader (which always errors): we need a partial-then-error
+// sequence to exercise bufio.Scanner's post-scan error path, where the
+// scanner consumes the partial payload and then surfaces the error via
+// scanner.Err() after the loop. Do not "simplify" to iotest.ErrReader
+// — coverage of that branch would disappear.
+type partialThenErrReader struct {
     buf  []byte
     read bool
     err  error
 }
 
-func (r *gotestFailingReader) Read(p []byte) (int, error) {
+func (r *partialThenErrReader) Read(p []byte) (int, error) {
     if !r.read {
         n := copy(p, r.buf)
         r.read = true
@@ -322,7 +327,7 @@ func TestGoTest_ScannerErrorSurfaces(t *testing.T) {
     // Read returns a real error. bufio.Scanner surfaces the error via
     // scanner.Err() after the loop.
     boom := errors.New("io broke")
-    r := &gotestFailingReader{
+    r := &partialThenErrReader{
         buf: []byte(`{"Action":"run","Package":"foo","Test":"TestA"}`),
         err: boom,
     }

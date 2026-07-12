@@ -6,7 +6,6 @@ import (
     "errors"
     "fmt"
     "io"
-    "net"
     "net/http"
     "net/http/httptest"
     "strings"
@@ -406,6 +405,7 @@ func TestCompute_AllStatusBranches(t *testing.T) {
 }
 
 func TestTitle_AllBranches(t *testing.T) {
+    // Arrange
     cases := []struct {
         name string
         t    Totals
@@ -415,6 +415,8 @@ func TestTitle_AllBranches(t *testing.T) {
         {"failure", Totals{Passed: 2, Failed: 1, Errored: 1, Total: 4}, "2 failed of 4 test(s)"},
         {"skipped", Totals{Skipped: 3, Total: 3}, "all 3 test(s) skipped"},
     }
+
+    // Act / Assert
     for _, tc := range cases {
         t.Run(tc.name, func(t *testing.T) {
             if got := Title(tc.t); got != tc.want {
@@ -479,6 +481,7 @@ func TestBodyMarkdown_LargeSuiteIsCollapsed(t *testing.T) {
 }
 
 func TestStatusIcon_AllArms(t *testing.T) {
+    // Arrange
     cases := []struct {
         s    ir.Status
         want string
@@ -489,6 +492,8 @@ func TestStatusIcon_AllArms(t *testing.T) {
         {ir.StatusError, "⚠️"},
         {ir.Status(99), "❓"}, // unknown → default arm
     }
+
+    // Act / Assert
     for _, tc := range cases {
         if got := statusIcon(tc.s); got != tc.want {
             t.Errorf("statusIcon(%v) = %q, want %q", tc.s, got, tc.want)
@@ -581,7 +586,7 @@ func TestChunk_ZeroSizeUsesMax(t *testing.T) {
 }
 
 func TestNewClient_Defaults(t *testing.T) {
-    // Act
+    // Arrange / Act
     c := NewClient("token", "owner", "repo")
 
     // Assert
@@ -606,6 +611,7 @@ func TestNewClient_Defaults(t *testing.T) {
 }
 
 func TestShouldRetryTransport(t *testing.T) {
+    // Arrange / Act / Assert — pure predicate, two inputs.
     if shouldRetryTransport(nil) {
         t.Errorf("nil error must not be retryable")
     }
@@ -615,6 +621,7 @@ func TestShouldRetryTransport(t *testing.T) {
 }
 
 func TestParseRetryAfter(t *testing.T) {
+    // Arrange
     cases := []struct {
         name string
         in   string
@@ -626,6 +633,8 @@ func TestParseRetryAfter(t *testing.T) {
         {"negative", "-3", 0},
         {"non-numeric", "later", 0},
     }
+
+    // Act / Assert
     for _, tc := range cases {
         t.Run(tc.name, func(t *testing.T) {
             if got := parseRetryAfter(tc.in); got != tc.want {
@@ -636,8 +645,10 @@ func TestParseRetryAfter(t *testing.T) {
 }
 
 func TestBackoffDuration_CapsAt10s(t *testing.T) {
-    // attempt=6 → 500ms << 5 = 16s, should cap at 10s.
+    // Arrange / Act — attempt=6 → 500ms << 5 = 16s, should cap at 10s.
     got := backoffDuration(6)
+
+    // Assert
     if got != 10*time.Second {
         t.Errorf("backoffDuration(6) = %v, want 10s cap", got)
     }
@@ -800,18 +811,26 @@ func TestClient_Do_RetryAfterHeaderHonored(t *testing.T) {
 }
 
 func TestClient_Do_TransportErrorRetriesThenGivesUp(t *testing.T) {
-    // Arrange — point at an address that immediately refuses.
-    // Use a closed listener's address to force ECONNREFUSED.
-    ln, err := net.Listen("tcp", "127.0.0.1:0")
-    if err != nil {
-        t.Fatalf("Listen: %v", err)
-    }
-    addr := "http://" + ln.Addr().String()
-    _ = ln.Close()
+    // Arrange — the handler hijacks and immediately closes the
+    // connection, forcing a transport-level error on the client. This
+    // avoids the TOCTOU window of closing a listener and racing another
+    // process for the same port.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        hj, ok := w.(http.Hijacker)
+        if !ok {
+            t.Fatal("ResponseWriter does not support Hijack")
+        }
+        conn, _, err := hj.Hijack()
+        if err != nil {
+            t.Fatalf("Hijack: %v", err)
+        }
+        _ = conn.Close()
+    }))
+    defer srv.Close()
 
     c := &Client{
         HTTPClient: &http.Client{Timeout: 1 * time.Second},
-        BaseURL:    addr,
+        BaseURL:    srv.URL,
         Token:      "t",
         Owner:      "o",
         Repo:       "r",
@@ -821,7 +840,7 @@ func TestClient_Do_TransportErrorRetriesThenGivesUp(t *testing.T) {
     }
 
     // Act
-    _, err = Publish(context.Background(), c, Config{HeadSHA: "sha"}, nil)
+    _, err := Publish(context.Background(), c, Config{HeadSHA: "sha"}, nil)
 
     // Assert
     if err == nil {

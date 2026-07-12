@@ -394,7 +394,11 @@ func TestJUnitParser_Parse_MalformedTestsuiteBody(t *testing.T) {
     }
 }
 
+// firstNonEmpty in the parse package is a binary helper (two args); the
+// main package has a differently-signatured variadic firstNonEmpty
+// tested in cmd/publish-test-results/main_test.go. Do not consolidate.
 func TestFirstNonEmpty(t *testing.T) {
+    // Arrange
     cases := []struct {
         a, b, want string
     }{
@@ -402,6 +406,8 @@ func TestFirstNonEmpty(t *testing.T) {
         {"", "fallback", "fallback"},
         {"", "", ""},
     }
+
+    // Act / Assert
     for _, tc := range cases {
         if got := firstNonEmpty(tc.a, tc.b); got != tc.want {
             t.Errorf("firstNonEmpty(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
