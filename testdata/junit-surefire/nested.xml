@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="4" failures="0" time="0.040">
+  <testsuite name="rle" tests="2" failures="0" skipped="0" time="0.020">
+    <testcase name="encode_empty" classname="rle" time="0.010"/>
+    <testcase name="decode_empty" classname="rle" time="0.010"/>
+  </testsuite>
+  <testsuite name="huffman" tests="2" failures="0" skipped="0" time="0.020">
+    <testcase name="round_trip_single_byte" classname="huffman" time="0.010"/>
+    <testcase name="round_trip_english_text" classname="huffman" time="0.010"/>
+  </testsuite>
+</testsuites>

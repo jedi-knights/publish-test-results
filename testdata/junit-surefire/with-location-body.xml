@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1" failures="1" time="0.001">
+  <testsuite name="ctestprobe" tests="1" failures="1" skipped="0" time="0.001">
+    <testcase name="failing_assert" classname="ctestprobe" time="0.001">
+      <failure message="assertion failed: 1 == 2" type="assertion">tests/foo.c:42: assertion failed: 1 == 2</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="my.module" tests="2" failures="1" errors="0" skipped="0" time="0.030">
+  <testcase name="test_one" classname="my.module" time="0.020"/>
+  <testcase name="test_two" classname="my.module" time="0.010">
+    <failure message="oops" type="AssertionError">detail</failure>
+  </testcase>
+</testsuite>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="4" failures="1" errors="1" skipped="1" time="0.100">
+  <testsuite name="my.module" tests="4" failures="1" errors="1" skipped="1" time="0.100">
+    <testcase name="test_pass" classname="my.module.Alpha" time="0.010"/>
+    <testcase name="test_fail" classname="my.module.Alpha" time="0.020">
+      <failure message="expected 2, got 3" type="AssertionError"/>
+    </testcase>
+    <testcase name="test_error" classname="my.module.Bravo" time="0.030">
+      <error message="something crashed" type="RuntimeError">stack trace here</error>
+    </testcase>
+    <testcase name="test_skip" classname="my.module.Bravo" time="0.001">
+      <skipped message="not applicable"/>
+    </testcase>
+  </testsuite>
+</testsuites>

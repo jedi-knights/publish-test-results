@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="2" failures="1" time="0.002">
+  <testsuite name="ctestprobe" tests="2" failures="1" skipped="0" time="0.002">
+    <testcase name="passing" classname="ctestprobe" file="tests/foo.c" line="10" time="0.001"/>
+    <testcase name="failing" classname="ctestprobe" file="tests/foo.c" line="42" time="0.001">
+      <failure message="assertion failed: 1 == 2" type="assertion"/>
+    </testcase>
+  </testsuite>
+</testsuites>
