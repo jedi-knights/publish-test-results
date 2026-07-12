@@ -16,6 +16,7 @@ import (
     "strings"
 
     "github.com/jedi-knights/publish-test-results/internal/ir"
+    "github.com/jedi-knights/publish-test-results/internal/locate"
     "github.com/jedi-knights/publish-test-results/internal/parse"
     "github.com/jedi-knights/publish-test-results/internal/publish"
 )
@@ -58,7 +59,9 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
         headSHA     string
         repoSlug    string
         apiURL      string
+        sourceRoot  string
         dryRun      bool
+        noLocator   bool
         showVer     bool
     )
     fs := flag.NewFlagSet("publish-test-results", flag.ContinueOnError)
@@ -69,7 +72,9 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
     fs.StringVar(&headSHA, "head-sha", "", "Commit SHA the check-run is attached to (falls back to GITHUB_SHA env)")
     fs.StringVar(&repoSlug, "repository", "", "owner/repo slug (falls back to GITHUB_REPOSITORY env)")
     fs.StringVar(&apiURL, "api-url", "", "GitHub API base URL (falls back to GITHUB_API_URL env, then api.github.com)")
+    fs.StringVar(&sourceRoot, "source-root", ".", "Directory the locator walks to infer file:line for tests without them")
     fs.BoolVar(&dryRun, "dry-run", false, "Parse the files and print a summary without posting to the GitHub API")
+    fs.BoolVar(&noLocator, "no-locator", false, "Disable filesystem inference of file:line for tests without source location")
     fs.BoolVar(&showVer, "version", false, "Print version and exit")
 
     if err := fs.Parse(args); err != nil {
@@ -118,8 +123,19 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
         all = append(all, report.Results...)
     }
 
+    // Locator pass: fill in File/Line for tests whose parser couldn't
+    // supply them. Off with --no-locator; the flag exists for
+    // debugging and for producers whose paths we don't want to trust.
+    var located int
+    if !noLocator {
+        loc := locate.New(sourceRoot)
+        before := countLocated(all)
+        loc.Fill(all)
+        located = countLocated(all) - before
+    }
+
     if dryRun {
-        printSummary(stdout, all, parserSeen)
+        printSummary(stdout, all, parserSeen, located)
         return exitOK
     }
 
@@ -162,8 +178,48 @@ func run(args []string, stdout, stderr io.Writer, envs env) int {
 
     fmt.Fprintf(stdout, "published %d test result(s) via %s\n",
         len(all), joinParsers(parserSeen))
+    if located > 0 {
+        fmt.Fprintf(stdout, "located %d test(s) via filesystem inference\n", located)
+    }
     fmt.Fprintf(stdout, "check-run: %s\n", resp.HTMLURL)
+
+    if summaryPath := envs.Get("GITHUB_STEP_SUMMARY"); summaryPath != "" {
+        if err := writeStepSummary(summaryPath, all, resp); err != nil {
+            fmt.Fprintf(stderr, "warning: failed to write step summary: %v\n", err)
+        }
+    }
     return exitOK
+}
+
+// countLocated returns how many results have both File and Line set.
+// Used by the locator pass to report how many entries were resolved.
+func countLocated(results []ir.TestResult) int {
+    var n int
+    for _, r := range results {
+        if r.File != "" && r.Line != 0 {
+            n++
+        }
+    }
+    return n
+}
+
+// writeStepSummary appends the check-run's summary markdown plus a
+// link to the run into the job's $GITHUB_STEP_SUMMARY file so the
+// results also render inline on the Actions run's Summary tab.
+func writeStepSummary(path string, results []ir.TestResult, resp *publish.CheckRunResponse) error {
+    f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+    if err != nil {
+        return err
+    }
+    defer f.Close()
+
+    fmt.Fprintln(f, "## Test Results")
+    fmt.Fprintln(f)
+    fmt.Fprintln(f, publish.SummaryMarkdown(results))
+    if resp != nil && resp.HTMLURL != "" {
+        fmt.Fprintf(f, "\n[Open the full check-run in the Checks tab](%s)\n", resp.HTMLURL)
+    }
+    return nil
 }
 
 // expandGlobs turns "a.xml,build/**/*.xml" into a flat list of matched
@@ -187,7 +243,7 @@ func expandGlobs(spec string) ([]string, error) {
 
 // printSummary writes a compact multi-line summary of the parsed
 // results. Intended for humans reading a CI log.
-func printSummary(w io.Writer, results []ir.TestResult, parsers map[string]int) {
+func printSummary(w io.Writer, results []ir.TestResult, parsers map[string]int, located int) {
     var passed, failed, skipped, errored int
     for _, r := range results {
         switch r.Status {
@@ -207,6 +263,9 @@ func printSummary(w io.Writer, results []ir.TestResult, parsers map[string]int) 
     fmt.Fprintf(w, "  failed:  %d\n", failed)
     fmt.Fprintf(w, "  errored: %d\n", errored)
     fmt.Fprintf(w, "  skipped: %d\n", skipped)
+    if located > 0 {
+        fmt.Fprintf(w, "  located: %d (via filesystem inference)\n", located)
+    }
 }
 
 // joinParsers stringifies the per-parser test count as "name×N, name×N".
