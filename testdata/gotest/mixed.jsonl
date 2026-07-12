@@ -1,0 +1,31 @@
+{"Time":"2026-07-12T07:30:00Z","Action":"start","Package":"example.com/foo"}
+{"Time":"2026-07-12T07:30:00Z","Action":"run","Package":"example.com/foo","Test":"TestAddition"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestAddition","Output":"=== RUN   TestAddition\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestAddition","Output":"--- PASS: TestAddition (0.01s)\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"pass","Package":"example.com/foo","Test":"TestAddition","Elapsed":0.01}
+{"Time":"2026-07-12T07:30:00Z","Action":"run","Package":"example.com/foo","Test":"TestSubtraction"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestSubtraction","Output":"=== RUN   TestSubtraction\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestSubtraction","Output":"    math_test.go:42: expected 2, got 3\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestSubtraction","Output":"--- FAIL: TestSubtraction (0.02s)\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"fail","Package":"example.com/foo","Test":"TestSubtraction","Elapsed":0.02}
+{"Time":"2026-07-12T07:30:00Z","Action":"run","Package":"example.com/foo","Test":"TestPending"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestPending","Output":"=== RUN   TestPending\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestPending","Output":"    pending_test.go:10: not implemented yet\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestPending","Output":"--- SKIP: TestPending (0.00s)\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"skip","Package":"example.com/foo","Test":"TestPending","Elapsed":0.0}
+{"Time":"2026-07-12T07:30:00Z","Action":"run","Package":"example.com/foo","Test":"TestTable"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestTable","Output":"=== RUN   TestTable\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"run","Package":"example.com/foo","Test":"TestTable/positive"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestTable/positive","Output":"=== RUN   TestTable/positive\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestTable/positive","Output":"    --- PASS: TestTable/positive (0.00s)\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"pass","Package":"example.com/foo","Test":"TestTable/positive","Elapsed":0.0}
+{"Time":"2026-07-12T07:30:00Z","Action":"run","Package":"example.com/foo","Test":"TestTable/negative"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestTable/negative","Output":"=== RUN   TestTable/negative\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestTable/negative","Output":"    table_test.go:88: sign check failed\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestTable/negative","Output":"    --- FAIL: TestTable/negative (0.00s)\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"fail","Package":"example.com/foo","Test":"TestTable/negative","Elapsed":0.0}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Test":"TestTable","Output":"--- FAIL: TestTable (0.00s)\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"fail","Package":"example.com/foo","Test":"TestTable","Elapsed":0.0}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Output":"FAIL\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"output","Package":"example.com/foo","Output":"FAIL\texample.com/foo\t0.043s\n"}
+{"Time":"2026-07-12T07:30:00Z","Action":"fail","Package":"example.com/foo","Elapsed":0.043}
