@@ -242,6 +242,30 @@ func TestJUnitParser_Parse_Entities(t *testing.T) {
     }
 }
 
+// TestJUnitParser_Parse_RealCtestprobeXML runs the parser against a
+// real Surefire document captured from ctestprobe running the compression
+// repo's rle suite. Guards against future refactors regressing on the
+// real-world shape that motivated this project.
+func TestJUnitParser_Parse_RealCtestprobeXML(t *testing.T) {
+    p := junitParser{}
+    data := readFixture(t, "junit-surefire/real-ctestprobe-rle.xml")
+    report, err := p.Parse(strings.NewReader(string(data)))
+    if err != nil {
+        t.Fatalf("Parse: %v", err)
+    }
+    if got := len(report.Results); got != 12 {
+        t.Fatalf("results = %d, want 12", got)
+    }
+    for _, r := range report.Results {
+        if r.Status != ir.StatusPassed {
+            t.Errorf("%q: status = %v, want Passed", r.Name, r.Status)
+        }
+        if r.Suite != "ctestprobe" {
+            t.Errorf("%q: suite = %q, want ctestprobe", r.Name, r.Suite)
+        }
+    }
+}
+
 func TestJUnitParser_Parse_ThroughDetect(t *testing.T) {
     // End-to-end sanity: Detect routes to junitParser and returns the
     // same shape as calling Parse directly.

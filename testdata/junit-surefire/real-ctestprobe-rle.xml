@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="12" failures="0" time="0.000">
+  <testsuite name="ctestprobe" tests="12" failures="0" skipped="0" time="0.000">
+    <testcase name="encode_empty" classname="ctestprobe" time="0.000"/>
+    <testcase name="encode_single_byte" classname="ctestprobe" time="0.000"/>
+    <testcase name="encode_run_of_five" classname="ctestprobe" time="0.000"/>
+    <testcase name="encode_mixed_runs" classname="ctestprobe" time="0.000"/>
+    <testcase name="encode_splits_runs_over_255" classname="ctestprobe" time="0.000"/>
+    <testcase name="encode_output_buffer_too_small" classname="ctestprobe" time="0.000"/>
+    <testcase name="decode_empty" classname="ctestprobe" time="0.000"/>
+    <testcase name="decode_single_pair" classname="ctestprobe" time="0.000"/>
+    <testcase name="decode_output_buffer_too_small" classname="ctestprobe" time="0.000"/>
+    <testcase name="decode_rejects_odd_length_input" classname="ctestprobe" time="0.000"/>
+    <testcase name="decode_rejects_zero_count" classname="ctestprobe" time="0.000"/>
+    <testcase name="round_trip" classname="ctestprobe" time="0.000"/>
+  </testsuite>
+</testsuites>
