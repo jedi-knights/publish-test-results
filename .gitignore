@@ -1,0 +1,24 @@
+# Build artifacts
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# Coverage
+coverage.txt
+coverage.html
+*.cover
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local dev
+tmp/
+
+# Project-local task tracking
+TODO.md
