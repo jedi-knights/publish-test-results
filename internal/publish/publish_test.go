@@ -123,7 +123,7 @@ func TestPublish_HappyPath(t *testing.T) {
     resp, err := Publish(context.Background(), c, Config{
         CheckName: "Test Results",
         HeadSHA:   "deadbeef",
-        Options:   DefaultOptions(),
+        Options:   Options{IncludePassed: true, IncludeSkipped: true},
     }, results)
     if err != nil {
         t.Fatalf("Publish: %v", err)
@@ -176,7 +176,7 @@ func TestPublish_BatchesAnnotations(t *testing.T) {
     }
     _, err := Publish(context.Background(), c, Config{
         HeadSHA: "abc123",
-        Options: DefaultOptions(),
+        Options: Options{IncludePassed: true, IncludeSkipped: true},
     }, results)
     if err != nil {
         t.Fatalf("Publish: %v", err)
@@ -220,7 +220,7 @@ func TestPublish_ResultsWithoutFileAreSkippedForAnnotations(t *testing.T) {
         {Suite: "alpha", Name: "also_no_loc", Status: ir.StatusFailed, Message: "boom"},
     }
     _, err := Publish(context.Background(), c, Config{
-        HeadSHA: "sha", Options: DefaultOptions(),
+        HeadSHA: "sha", Options: Options{IncludePassed: true, IncludeSkipped: true},
     }, results)
     if err != nil {
         t.Fatalf("Publish: %v", err)
@@ -307,6 +307,46 @@ func TestPublish_HeaderAuthAndVersion(t *testing.T) {
     }
     if !strings.Contains(hdr.Get("Accept"), "vnd.github+json") {
         t.Errorf("Accept = %q", hdr.Get("Accept"))
+    }
+}
+
+// DefaultOptions is failure-only: passing and skipped tests are covered
+// by the check-run's summary table, so the diff-level annotations stay
+// as a scarce resource for things that actually need attention. Callers
+// opt back in via IncludePassed / IncludeSkipped.
+func TestDefaultOptions_IsFailureOnly(t *testing.T) {
+    // Arrange / Act
+    opts := DefaultOptions()
+
+    // Assert
+    if opts.IncludePassed {
+        t.Errorf("DefaultOptions().IncludePassed = true, want false")
+    }
+    if opts.IncludeSkipped {
+        t.Errorf("DefaultOptions().IncludeSkipped = true, want false")
+    }
+}
+
+func TestAnnotationsFor_DefaultsAnnotateFailuresOnly(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Suite: "s", Name: "p", Status: ir.StatusPassed, File: "a.go", Line: 1},
+        {Suite: "s", Name: "s", Status: ir.StatusSkipped, File: "a.go", Line: 2},
+        {Suite: "s", Name: "f", Status: ir.StatusFailed, File: "a.go", Line: 3, Message: "boom"},
+        {Suite: "s", Name: "e", Status: ir.StatusError, File: "a.go", Line: 4, Message: "kapow"},
+    }
+
+    // Act
+    got := AnnotationsFor(results, DefaultOptions())
+
+    // Assert
+    if len(got) != 2 {
+        t.Fatalf("annotations = %d, want 2 (only failed + errored)", len(got))
+    }
+    for _, a := range got {
+        if a.AnnotationLevel != LevelFailure {
+            t.Errorf("annotation level = %q, want failure", a.AnnotationLevel)
+        }
     }
 }
 

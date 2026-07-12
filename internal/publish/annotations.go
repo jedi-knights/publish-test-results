@@ -14,12 +14,16 @@ type Options struct {
     IncludeSkipped bool
 }
 
-// DefaultOptions represents the recommended defaults: annotate every
-// test we can locate, so drill-down works across the full grid.
+// DefaultOptions is failure-only. Diff-level annotations are a scarce
+// attention resource on GitHub's Files-changed tab — a real suite emits
+// hundreds of passing tests and drowning the diff in green pins buries
+// the failures. Passing and skipped tests remain fully drilldownable
+// via the check-run's summary table. Callers opt back in with
+// IncludePassed / IncludeSkipped when they want the full grid.
 func DefaultOptions() Options {
     return Options{
-        IncludePassed:  true,
-        IncludeSkipped: true,
+        IncludePassed:  false,
+        IncludeSkipped: false,
     }
 }
 

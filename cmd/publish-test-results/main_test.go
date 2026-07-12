@@ -152,6 +152,76 @@ func TestRun_RealPublishSuccess(t *testing.T) {
     }
 }
 
+// TestRun_DefaultsAnnotateFailuresOnly locks in the failure-only
+// default. Fixture has one passing + one failing test, both with
+// file:line — the outbound HTTP body should carry exactly one
+// annotation (the failure).
+func TestRun_DefaultsAnnotateFailuresOnly(t *testing.T) {
+    // Arrange
+    var gotBody []byte
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        gotBody, _ = io.ReadAll(r.Body)
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://x"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":      "t",
+        "GITHUB_SHA":        "sha",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_API_URL":    srv.URL,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    n := strings.Count(string(gotBody), `"annotation_level"`)
+    if n != 1 {
+        t.Errorf("annotations = %d, want 1 (failure only); body = %s", n, gotBody)
+    }
+}
+
+// TestRun_IncludePassedFlagOptsIn verifies --include-passed re-enables
+// notice pins for the passing test in the same fixture.
+func TestRun_IncludePassedFlagOptsIn(t *testing.T) {
+    // Arrange
+    var gotBody []byte
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        gotBody, _ = io.ReadAll(r.Body)
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://x"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":      "t",
+        "GITHUB_SHA":        "sha",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_API_URL":    srv.URL,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture, "--include-passed"}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    n := strings.Count(string(gotBody), `"annotation_level"`)
+    if n != 2 {
+        t.Errorf("annotations = %d, want 2 (pass + fail); body = %s", n, gotBody)
+    }
+}
+
 func TestExpandGlobs(t *testing.T) {
     matches, err := expandGlobs("../../testdata/junit-surefire/*.xml")
     if err != nil {

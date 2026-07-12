@@ -117,9 +117,10 @@ step exits non-zero.
 |---|---|---|
 | `files` | Glob pattern for report files; multiple globs comma-separated. | `**/*.xml` |
 | `check-name` | Name shown in the Checks tab. | `Test Results` |
-| `comment-on-pr` | Whether to post a compact PR comment. | `false` |
-| `include-passed-annotations` | Whether to emit per-test annotations for passes (not just failures). | `true` |
-| `job-summary` | Whether to write `$GITHUB_STEP_SUMMARY`. | `true` |
+| `include-passed` | Also emit per-test annotations for passing tests (green notice pins on the diff). Defaults off because on a real suite the volume of green pins buries the failures; passing tests remain in the check-run summary table regardless. | `false` |
+| `include-skipped` | Also emit per-test annotations for skipped tests. | `false` |
+| `source-root` | Directory the locator walks to infer `file:line` for reports without source location. | `.` |
+| `no-locator` | Disable filesystem inference of `file:line`. | `false` |
 | `github-token` | Token for the Checks API. | `${{ github.token }}` |
 
 ## Development
