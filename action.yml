@@ -1,0 +1,72 @@
+name: Publish Test Results
+description: |
+  Publishes multi-format test results as a drilldownable per-test check-run.
+  Every test appears as a clickable annotation on the code diff and in the
+  Checks tab. Consumes JUnit XML today; xUnit, NUnit, TRX, TAP, go test -json,
+  Jest, Vitest, Cucumber, and SubUnit are planned.
+
+branding:
+  icon: check-square
+  color: green
+
+inputs:
+  files:
+    description: Comma-separated globs of test-report files to parse (e.g. "**/*junit*.xml").
+    required: true
+  check-name:
+    description: Name shown in the GitHub Checks tab.
+    required: false
+    default: Test Results
+  github-token:
+    description: |
+      GitHub token used to create the check-run. Needs `checks: write` and
+      (for PR comments) `pull-requests: write` permissions on the workflow.
+    required: false
+    default: ${{ github.token }}
+  source-root:
+    description: |
+      Directory the filesystem locator walks to infer `file:line` for tests
+      whose report format doesn't carry source location. Defaults to the
+      workflow's checkout root.
+    required: false
+    default: '.'
+  no-locator:
+    description: Disable filesystem inference of file:line (set to "true" to skip).
+    required: false
+    default: 'false'
+  go-version:
+    description: Go toolchain version used to build the action binary.
+    required: false
+    default: '1.26'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: ${{ inputs.go-version }}
+        # No cache-dependency-path — we have zero external deps, so
+        # setup-go's default caching keyed on go.mod is sufficient.
+        cache: false
+
+    - name: Build publish-test-results binary
+      shell: bash
+      run: |
+        cd "${{ github.action_path }}"
+        go build -o "${RUNNER_TEMP}/publish-test-results" ./cmd/publish-test-results
+
+    - name: Publish test results
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        extra_args=()
+        if [ "${{ inputs.no-locator }}" = "true" ]; then
+          extra_args+=("--no-locator")
+        fi
+        "${RUNNER_TEMP}/publish-test-results" \
+          --files="${{ inputs.files }}" \
+          --check-name="${{ inputs.check-name }}" \
+          --source-root="${{ inputs.source-root }}" \
+          "${extra_args[@]}"
