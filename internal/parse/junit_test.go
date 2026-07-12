@@ -1,6 +1,7 @@
 package parse
 
 import (
+    "errors"
     "os"
     "path/filepath"
     "strings"
@@ -333,5 +334,118 @@ func TestParseSurefireLocation(t *testing.T) {
             t.Errorf("parseSurefireLocation(%q) = (%q, %d, %v), want (%q, %d, %v)",
                 tc.in, f, l, ok, tc.wantFile, tc.wantLine, tc.wantOK)
         }
+    }
+}
+
+// failingReader always returns a synthetic error, exercising the
+// io.ReadAll path in junitParser.Parse.
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestJUnitParser_Parse_ReadError(t *testing.T) {
+    // Arrange
+    boom := errors.New("read boom")
+
+    // Act
+    _, err := junitParser{}.Parse(failingReader{err: boom})
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected read error")
+    }
+    if !errors.Is(err, boom) {
+        t.Errorf("error should wrap %v, got %v", boom, err)
+    }
+}
+
+func TestJUnitParser_Parse_MalformedRoot(t *testing.T) {
+    // Arrange — no root element at all. findRootElement fails.
+    _, err := junitParser{}.Parse(strings.NewReader(`<?xml version="1.0"?>`))
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected error when no root element present")
+    }
+}
+
+func TestJUnitParser_Parse_MalformedTestsuitesBody(t *testing.T) {
+    // Arrange — valid root, but broken XML inside forces xml.Unmarshal
+    // to error out.
+    _, err := junitParser{}.Parse(strings.NewReader(
+        `<testsuites><testsuite><testcase name="x" & broken></testsuite></testsuites>`,
+    ))
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected unmarshal error on broken testsuites body")
+    }
+}
+
+func TestJUnitParser_Parse_MalformedTestsuiteBody(t *testing.T) {
+    // Arrange — bare <testsuite> root with a malformed inner element.
+    _, err := junitParser{}.Parse(strings.NewReader(
+        `<testsuite name="x"><testcase name="y" & broken></testsuite>`,
+    ))
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected unmarshal error on broken testsuite body")
+    }
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+    cases := []struct {
+        a, b, want string
+    }{
+        {"first", "second", "first"},
+        {"", "fallback", "fallback"},
+        {"", "", ""},
+    }
+    for _, tc := range cases {
+        if got := firstNonEmpty(tc.a, tc.b); got != tc.want {
+            t.Errorf("firstNonEmpty(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
+        }
+    }
+}
+
+func TestSkipXMLProlog(t *testing.T) {
+    cases := []struct {
+        name string
+        in   string
+        want string
+    }{
+        {"leading whitespace", "   \n\t<testsuites/>", "<testsuites/>"},
+        {"xml decl", `<?xml version="1.0"?><testsuite/>`, "<testsuite/>"},
+        {"xml comment", `<!-- header --><testsuites/>`, "<testsuites/>"},
+        {"unterminated xml decl", `<?xml no close`, ""},
+        {"unterminated comment", `<!-- no close`, ""},
+        {"multiple comments", `<!-- a --><!-- b --><root/>`, "<root/>"},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            if got := skipXMLProlog(tc.in); got != tc.want {
+                t.Errorf("skipXMLProlog(%q) = %q, want %q", tc.in, got, tc.want)
+            }
+        })
+    }
+}
+
+func TestFindRootElement_Empty(t *testing.T) {
+    // Empty input: tokenizer sees EOF before any element.
+    _, err := findRootElement([]byte(""))
+    if err == nil {
+        t.Fatal("expected error for empty input")
+    }
+    if !strings.Contains(err.Error(), "no root element") {
+        t.Errorf("wrong error: %v", err)
+    }
+}
+
+func TestFindRootElement_MalformedToken(t *testing.T) {
+    // Unbalanced open — the tokenizer's error path (not the EOF path).
+    _, err := findRootElement([]byte(`<?xml version="1.0"?><<<`))
+    if err == nil {
+        t.Fatal("expected tokenize error")
     }
 }

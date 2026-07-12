@@ -6,9 +6,13 @@ import (
     "io"
     "net/http"
     "net/http/httptest"
+    "os"
     "path/filepath"
     "strings"
     "testing"
+
+    "github.com/jedi-knights/publish-test-results/internal/ir"
+    "github.com/jedi-knights/publish-test-results/internal/publish"
 )
 
 func TestRun_NoArgsPrintsUsage(t *testing.T) {
@@ -231,6 +235,329 @@ func TestExpandGlobs(t *testing.T) {
     // lower bound so future additions don't break the test.
     if len(matches) < 5 {
         t.Errorf("only %d matches; expected at least 5", len(matches))
+    }
+}
+
+func TestExpandGlobs_InvalidPattern(t *testing.T) {
+    // Malformed glob (unmatched bracket) — filepath.Glob returns an error.
+    if _, err := expandGlobs("["); err == nil {
+        t.Fatal("expected error on malformed pattern")
+    }
+}
+
+// writeSummaryTo creates an empty file at a temp path and returns it,
+// suitable for GITHUB_STEP_SUMMARY.
+func writeSummaryTo(t *testing.T) string {
+    t.Helper()
+    path := filepath.Join(t.TempDir(), "summary.md")
+    if err := os.WriteFile(path, nil, 0o644); err != nil {
+        t.Fatalf("prep summary file: %v", err)
+    }
+    return path
+}
+
+func TestWriteStepSummary_WritesSummaryAndLink(t *testing.T) {
+    // Arrange
+    path := writeSummaryTo(t)
+    results := []ir.TestResult{
+        {Suite: "s", Status: ir.StatusPassed},
+    }
+    resp := &publish.CheckRunResponse{HTMLURL: "https://gh/runs/1"}
+
+    // Act
+    if err := writeStepSummary(path, results, resp); err != nil {
+        t.Fatalf("writeStepSummary: %v", err)
+    }
+
+    // Assert
+    body, err := os.ReadFile(path)
+    if err != nil {
+        t.Fatalf("read summary: %v", err)
+    }
+    got := string(body)
+    if !strings.Contains(got, "## Test Results") {
+        t.Errorf("missing header: %q", got)
+    }
+    if !strings.Contains(got, "https://gh/runs/1") {
+        t.Errorf("missing check-run link: %q", got)
+    }
+}
+
+func TestWriteStepSummary_NilResponseOmitsLink(t *testing.T) {
+    path := writeSummaryTo(t)
+    if err := writeStepSummary(path, nil, nil); err != nil {
+        t.Fatalf("writeStepSummary: %v", err)
+    }
+    body, _ := os.ReadFile(path)
+    if strings.Contains(string(body), "[Open the full check-run") {
+        t.Errorf("nil response should not emit a link, got: %q", string(body))
+    }
+}
+
+func TestWriteStepSummary_OpenFileFails(t *testing.T) {
+    // Writing to a directory path fails at OpenFile.
+    if err := writeStepSummary(t.TempDir(), nil, nil); err == nil {
+        t.Fatal("expected error when path is a directory")
+    }
+}
+
+func TestRun_WritesStepSummaryWhenEnvSet(t *testing.T) {
+    // Arrange
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://ok"})
+    }))
+    defer srv.Close()
+
+    summaryPath := writeSummaryTo(t)
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":        "t",
+        "GITHUB_SHA":          "sha",
+        "GITHUB_REPOSITORY":   "o/r",
+        "GITHUB_API_URL":      srv.URL,
+        "GITHUB_STEP_SUMMARY": summaryPath,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    body, _ := os.ReadFile(summaryPath)
+    if !strings.Contains(string(body), "## Test Results") {
+        t.Errorf("summary file not populated: %q", string(body))
+    }
+}
+
+func TestRun_PublishAPIFailureIsUsageError(t *testing.T) {
+    // Arrange — 400 is not retryable; publish surfaces the APIError.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusBadRequest)
+        _ = json.NewEncoder(w).Encode(map[string]string{"message": "bad request"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":      "t",
+        "GITHUB_SHA":        "sha",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_API_URL":    srv.URL,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+    if !strings.Contains(stderr.String(), "publish failed") {
+        t.Errorf("stderr missing 'publish failed': %q", stderr.String())
+    }
+}
+
+func TestRun_ParseErrorIsUsageError(t *testing.T) {
+    // Arrange — a file no registered parser recognizes.
+    tmp := filepath.Join(t.TempDir(), "junk.xml")
+    if err := os.WriteFile(tmp, []byte("plain text, no known format"), 0o644); err != nil {
+        t.Fatalf("prep fixture: %v", err)
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + tmp, "--dry-run"}, &stdout, &stderr, mapEnv{})
+
+    // Assert
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+    if !strings.Contains(stderr.String(), "parse ") {
+        t.Errorf("stderr should mention parse: %q", stderr.String())
+    }
+}
+
+func TestRun_FlagParseErrorIsUsageError(t *testing.T) {
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--not-a-real-flag"}, &stdout, &stderr, mapEnv{})
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+}
+
+func TestRun_GlobErrorIsUsageError(t *testing.T) {
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=[", "--dry-run"}, &stdout, &stderr, mapEnv{})
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+    if !strings.Contains(stderr.String(), "glob error") {
+        t.Errorf("stderr missing 'glob error': %q", stderr.String())
+    }
+}
+
+func TestRun_LocatorFillsMatchingNames(t *testing.T) {
+    // Arrange — build a JUnit fixture whose test names match the
+    // locator's own gotest fixture (TestOne, TestTwo, TestThree). This
+    // reliably triggers the located>0 branch.
+    fixture := filepath.Join(t.TempDir(), "junit.xml")
+    body := `<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="s">
+    <testcase name="TestOne" classname="s"/>
+    <testcase name="TestTwo" classname="s"/>
+    <testcase name="TestThree" classname="s"/>
+  </testsuite>
+</testsuites>`
+    if err := os.WriteFile(fixture, []byte(body), 0o644); err != nil {
+        t.Fatalf("write fixture: %v", err)
+    }
+    sourceRoot := filepath.Join("..", "..", "testdata", "locate", "gotest")
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture, "--dry-run", "--source-root=" + sourceRoot},
+        &stdout, &stderr, mapEnv{})
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    if !strings.Contains(stdout.String(), "located: 3") {
+        t.Errorf("stdout should show located count: %q", stdout.String())
+    }
+}
+
+func TestRun_LocatedLinePrintedOnPublish(t *testing.T) {
+    // Arrange — publish (non-dry-run) with locator matches. The
+    // "located X test(s)" print in the publish path only fires when
+    // located > 0.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://ok"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join(t.TempDir(), "junit.xml")
+    body := `<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="s">
+    <testcase name="TestOne" classname="s"/>
+  </testsuite>
+</testsuites>`
+    if err := os.WriteFile(fixture, []byte(body), 0o644); err != nil {
+        t.Fatalf("write fixture: %v", err)
+    }
+    sourceRoot := filepath.Join("..", "..", "testdata", "locate", "gotest")
+    envs := mapEnv{
+        "GITHUB_TOKEN":      "t",
+        "GITHUB_SHA":        "sha",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_API_URL":    srv.URL,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture, "--source-root=" + sourceRoot}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    if !strings.Contains(stdout.String(), "located 1 test(s) via filesystem inference") {
+        t.Errorf("stdout should include located line, got: %q", stdout.String())
+    }
+}
+
+func TestRun_StepSummaryWriteFailureIsWarning(t *testing.T) {
+    // Arrange — env points at a directory, so writeStepSummary fails.
+    // The warning is emitted but the overall run still succeeds.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://ok"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":        "t",
+        "GITHUB_SHA":          "sha",
+        "GITHUB_REPOSITORY":   "o/r",
+        "GITHUB_API_URL":      srv.URL,
+        "GITHUB_STEP_SUMMARY": t.TempDir(), // directory, not a file
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    if !strings.Contains(stderr.String(), "warning: failed to write step summary") {
+        t.Errorf("expected warning in stderr, got: %q", stderr.String())
+    }
+}
+
+func TestPrintSummary_AllStatuses(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Status: ir.StatusPassed},
+        {Status: ir.StatusFailed},
+        {Status: ir.StatusSkipped},
+        {Status: ir.StatusError},
+    }
+    parsers := map[string]int{"junit": 4}
+
+    // Act
+    var buf bytes.Buffer
+    printSummary(&buf, results, parsers, 2)
+
+    // Assert
+    got := buf.String()
+    for _, want := range []string{"passed:  1", "failed:  1", "skipped: 1", "errored: 1", "located: 2"} {
+        if !strings.Contains(got, want) {
+            t.Errorf("missing %q in: %s", want, got)
+        }
+    }
+}
+
+func TestSortStrings(t *testing.T) {
+    // Arrange
+    got := []string{"c", "a", "b", "aa"}
+
+    // Act
+    sortStrings(got)
+
+    // Assert
+    want := []string{"a", "aa", "b", "c"}
+    for i := range want {
+        if got[i] != want[i] {
+            t.Errorf("sortStrings[%d] = %q, want %q; full = %v", i, got[i], want[i], got)
+        }
+    }
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+    cases := []struct {
+        args []string
+        want string
+    }{
+        {[]string{"", "", "third"}, "third"},
+        {[]string{"first"}, "first"},
+        {[]string{}, ""},
+        {[]string{""}, ""},
+    }
+    for _, tc := range cases {
+        if got := firstNonEmpty(tc.args...); got != tc.want {
+            t.Errorf("firstNonEmpty(%v) = %q, want %q", tc.args, got, tc.want)
+        }
     }
 }
 

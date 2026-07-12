@@ -1,6 +1,7 @@
 package locate
 
 import (
+    "os"
     "path/filepath"
     "testing"
 
@@ -180,4 +181,75 @@ func stringSlicesEqual(a, b []string) bool {
         }
     }
     return true
+}
+
+func TestNew_EmptyRootsDefaultsToCWD(t *testing.T) {
+    // Arrange / Act
+    l := New()
+
+    // Assert
+    if len(l.roots) != 1 || l.roots[0] != "." {
+        t.Errorf("roots = %v, want [.]", l.roots)
+    }
+}
+
+func TestLocator_BuildSkipsDotDirs(t *testing.T) {
+    // Arrange — construct a tree with a hidden and a well-known ignored
+    // directory alongside a real _test.go file. The locator should
+    // index only the real one.
+    root := t.TempDir()
+    mustMkdir(t, filepath.Join(root, ".hidden"))
+    mustWrite(t, filepath.Join(root, ".hidden", "hidden_test.go"),
+        "package hidden\nfunc TestHidden(t *testing.T) {}\n")
+    mustMkdir(t, filepath.Join(root, "node_modules"))
+    mustWrite(t, filepath.Join(root, "node_modules", "np_test.go"),
+        "package np\nfunc TestFromNodeModules(t *testing.T) {}\n")
+    mustWrite(t, filepath.Join(root, "real_test.go"),
+        "package real\nfunc TestRealOne(t *testing.T) {}\n")
+
+    // Act
+    l := New(root)
+    got := l.Indexed()
+
+    // Assert
+    if got != 1 {
+        t.Errorf("Indexed = %d, want 1 (only real_test.go)", got)
+    }
+    if _, ok := l.Locate("", "TestRealOne"); !ok {
+        t.Errorf("TestRealOne must be indexed")
+    }
+    if _, ok := l.Locate("", "TestHidden"); ok {
+        t.Errorf(".hidden directory must be skipped")
+    }
+    if _, ok := l.Locate("", "TestFromNodeModules"); ok {
+        t.Errorf("node_modules must be skipped")
+    }
+}
+
+func TestLocator_BuildTolerantOfMissingRoot(t *testing.T) {
+    // Arrange — a non-existent root path drives WalkDir's error branch,
+    // which the locator should silently ignore (best-effort helper).
+    l := New(filepath.Join(t.TempDir(), "does", "not", "exist"))
+
+    // Act
+    got := l.Indexed()
+
+    // Assert
+    if got != 0 {
+        t.Errorf("Indexed = %d, want 0", got)
+    }
+}
+
+func mustMkdir(t *testing.T, path string) {
+    t.Helper()
+    if err := os.MkdirAll(path, 0o755); err != nil {
+        t.Fatalf("mkdir %s: %v", path, err)
+    }
+}
+
+func mustWrite(t *testing.T, path, content string) {
+    t.Helper()
+    if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+        t.Fatalf("write %s: %v", path, err)
+    }
 }
