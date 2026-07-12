@@ -1,0 +1,8 @@
+{"Time":"2026-07-12T07:29:50.50277-04:00","Action":"start","Package":"github.com/jedi-knights/publish-test-results/internal/ir"}
+{"Time":"2026-07-12T07:29:50.725056-04:00","Action":"run","Package":"github.com/jedi-knights/publish-test-results/internal/ir","Test":"TestStatus_String"}
+{"Time":"2026-07-12T07:29:50.725192-04:00","Action":"output","Package":"github.com/jedi-knights/publish-test-results/internal/ir","Test":"TestStatus_String","Output":"=== RUN   TestStatus_String\n"}
+{"Time":"2026-07-12T07:29:50.725243-04:00","Action":"output","Package":"github.com/jedi-knights/publish-test-results/internal/ir","Test":"TestStatus_String","Output":"--- PASS: TestStatus_String (0.00s)\n"}
+{"Time":"2026-07-12T07:29:50.725257-04:00","Action":"pass","Package":"github.com/jedi-knights/publish-test-results/internal/ir","Test":"TestStatus_String","Elapsed":0}
+{"Time":"2026-07-12T07:29:50.725276-04:00","Action":"output","Package":"github.com/jedi-knights/publish-test-results/internal/ir","Output":"PASS\n"}
+{"Time":"2026-07-12T07:29:50.72628-04:00","Action":"output","Package":"github.com/jedi-knights/publish-test-results/internal/ir","Output":"ok  \tgithub.com/jedi-knights/publish-test-results/internal/ir\t0.223s\n"}
+{"Time":"2026-07-12T07:29:50.726308-04:00","Action":"pass","Package":"github.com/jedi-knights/publish-test-results/internal/ir","Elapsed":0.224}
