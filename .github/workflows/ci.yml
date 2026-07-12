@@ -9,6 +9,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
 
@@ -36,6 +39,8 @@ jobs:
           name: results-junit-xml
           path: results.xml
 
-      - name: Self-parse test results (dogfood the JUnit parser)
+      - name: Publish check-run (dogfood ourselves)
         if: always()
-        run: ./bin/publish-test-results --files=results.xml --dry-run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./bin/publish-test-results --files=results.xml --check-name="Test Results"

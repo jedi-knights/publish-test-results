@@ -1,16 +1,13 @@
 // Command publish-test-results is the GitHub Action entrypoint. It reads
-// action inputs (from CLI flags in dry-run mode, from INPUT_* environment
-// variables when invoked as the composite action), parses one or more
-// test-report files via the dialect-agnostic parser bank in internal/parse,
-// and — once the publisher lands — posts a Check Run to the GitHub API
-// via internal/publish.
-//
-// Today only --dry-run is wired up. It parses every matching file and
-// prints a summary. That's enough to dogfood the parser bank against the
-// action's own test suite in CI without the publisher being ready.
+// action inputs (from CLI flags in --dry-run mode, from the standard
+// GitHub Actions environment variables when publishing for real),
+// parses one or more test-report files via the dialect-agnostic parser
+// bank in internal/parse, and posts a Check Run to the GitHub API via
+// internal/publish.
 package main
 
 import (
+    "context"
     "flag"
     "fmt"
     "io"
@@ -20,6 +17,7 @@ import (
 
     "github.com/jedi-knights/publish-test-results/internal/ir"
     "github.com/jedi-knights/publish-test-results/internal/parse"
+    "github.com/jedi-knights/publish-test-results/internal/publish"
 )
 
 // version is stamped at release time via -ldflags. The default is
@@ -27,27 +25,50 @@ import (
 var version = "0.1.0-dev"
 
 // exit codes matching test-runner convention:
-//   0 — parse succeeded
+//   0 — parse and publish succeeded
 //   1 — reserved for future "some tests failed and --fail-on-error was set"
-//   2 — usage / IO / parse error
+//   2 — usage / IO / parse / publish error
 const (
     exitOK    = 0
     exitUsage = 2
 )
 
 func main() {
-    os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+    os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, osEnv{}))
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+// env abstracts environment access so tests can supply their own map.
+type env interface {
+    Get(key string) string
+}
+
+type osEnv struct{}
+
+func (osEnv) Get(key string) string { return os.Getenv(key) }
+
+type mapEnv map[string]string
+
+func (m mapEnv) Get(key string) string { return m[key] }
+
+func run(args []string, stdout, stderr io.Writer, envs env) int {
     var (
-        files   string
-        dryRun  bool
-        showVer bool
+        files       string
+        checkName   string
+        githubToken string
+        headSHA     string
+        repoSlug    string
+        apiURL      string
+        dryRun      bool
+        showVer     bool
     )
     fs := flag.NewFlagSet("publish-test-results", flag.ContinueOnError)
     fs.SetOutput(stderr)
     fs.StringVar(&files, "files", "", "Comma-separated globs of test-report files to parse")
+    fs.StringVar(&checkName, "check-name", "Test Results", "Name shown in the GitHub Checks tab")
+    fs.StringVar(&githubToken, "github-token", "", "GitHub API token (falls back to GITHUB_TOKEN env)")
+    fs.StringVar(&headSHA, "head-sha", "", "Commit SHA the check-run is attached to (falls back to GITHUB_SHA env)")
+    fs.StringVar(&repoSlug, "repository", "", "owner/repo slug (falls back to GITHUB_REPOSITORY env)")
+    fs.StringVar(&apiURL, "api-url", "", "GitHub API base URL (falls back to GITHUB_API_URL env, then api.github.com)")
     fs.BoolVar(&dryRun, "dry-run", false, "Parse the files and print a summary without posting to the GitHub API")
     fs.BoolVar(&showVer, "version", false, "Print version and exit")
 
@@ -78,29 +99,23 @@ func run(args []string, stdout, stderr io.Writer) int {
     }
 
     var (
-        all         []ir.TestResult
-        parserSeen  = map[string]int{}
-        totalErrors int
+        all        []ir.TestResult
+        parserSeen = map[string]int{}
     )
     for _, path := range matches {
         f, err := os.Open(path)
         if err != nil {
             fmt.Fprintf(stderr, "open %s: %v\n", path, err)
-            totalErrors++
-            continue
+            return exitUsage
         }
         report, name, err := parse.Detect(f)
         _ = f.Close()
         if err != nil {
             fmt.Fprintf(stderr, "parse %s: %v\n", path, err)
-            totalErrors++
-            continue
+            return exitUsage
         }
         parserSeen[name] += len(report.Results)
         all = append(all, report.Results...)
-    }
-    if totalErrors > 0 {
-        return exitUsage
     }
 
     if dryRun {
@@ -108,8 +123,47 @@ func run(args []string, stdout, stderr io.Writer) int {
         return exitOK
     }
 
-    fmt.Fprintln(stderr, "note: publisher not implemented yet; re-run with --dry-run for parse validation")
-    return exitUsage
+    // Real publish: resolve credentials + target from flags or env,
+    // then hand off to internal/publish.
+    token := firstNonEmpty(githubToken, envs.Get("GITHUB_TOKEN"))
+    if token == "" {
+        fmt.Fprintln(stderr, "GITHUB_TOKEN not set (pass --github-token or set the env var)")
+        return exitUsage
+    }
+    sha := firstNonEmpty(headSHA, envs.Get("GITHUB_SHA"))
+    if sha == "" {
+        fmt.Fprintln(stderr, "GITHUB_SHA not set (pass --head-sha or set the env var)")
+        return exitUsage
+    }
+    slug := firstNonEmpty(repoSlug, envs.Get("GITHUB_REPOSITORY"))
+    if slug == "" {
+        fmt.Fprintln(stderr, "GITHUB_REPOSITORY not set (pass --repository or set the env var)")
+        return exitUsage
+    }
+    owner, repo, ok := splitRepoSlug(slug)
+    if !ok {
+        fmt.Fprintf(stderr, "malformed repository slug %q; expected owner/repo\n", slug)
+        return exitUsage
+    }
+    baseURL := firstNonEmpty(apiURL, envs.Get("GITHUB_API_URL"), "https://api.github.com")
+
+    client := publish.NewClient(token, owner, repo)
+    client.BaseURL = baseURL
+
+    resp, err := publish.Publish(context.Background(), client, publish.Config{
+        CheckName: checkName,
+        HeadSHA:   sha,
+        Options:   publish.DefaultOptions(),
+    }, all)
+    if err != nil {
+        fmt.Fprintf(stderr, "publish failed: %v\n", err)
+        return exitUsage
+    }
+
+    fmt.Fprintf(stdout, "published %d test result(s) via %s\n",
+        len(all), joinParsers(parserSeen))
+    fmt.Fprintf(stdout, "check-run: %s\n", resp.HTMLURL)
+    return exitOK
 }
 
 // expandGlobs turns "a.xml,build/**/*.xml" into a flat list of matched
@@ -131,9 +185,8 @@ func expandGlobs(spec string) ([]string, error) {
     return out, nil
 }
 
-// printSummary writes a compact multi-line summary of the parsed results.
-// The format is intended for humans reading a CI log — not for downstream
-// tooling.
+// printSummary writes a compact multi-line summary of the parsed
+// results. Intended for humans reading a CI log.
 func printSummary(w io.Writer, results []ir.TestResult, parsers map[string]int) {
     var passed, failed, skipped, errored int
     for _, r := range results {
@@ -156,13 +209,50 @@ func printSummary(w io.Writer, results []ir.TestResult, parsers map[string]int) 
     fmt.Fprintf(w, "  skipped: %d\n", skipped)
 }
 
-// joinParsers stringifies the per-parser test count as "name×N, name×N"
-// in whatever order Go's map iteration hands them out — stable enough
-// for a CI log line, not intended for parsing.
+// joinParsers stringifies the per-parser test count as "name×N, name×N".
+// Map iteration order is unstable; sort so log lines are reproducible.
 func joinParsers(parsers map[string]int) string {
-    var parts []string
-    for name, n := range parsers {
-        parts = append(parts, fmt.Sprintf("%s×%d", name, n))
+    names := make([]string, 0, len(parsers))
+    for name := range parsers {
+        names = append(names, name)
+    }
+    sortStrings(names)
+    parts := make([]string, 0, len(names))
+    for _, name := range names {
+        parts = append(parts, fmt.Sprintf("%s×%d", name, parsers[name]))
     }
     return strings.Join(parts, ", ")
+}
+
+// sortStrings avoids pulling in the sort package for one call site;
+// n is always small (≤ number of registered parsers) so an insertion
+// sort is fine.
+func sortStrings(s []string) {
+    for i := 1; i < len(s); i++ {
+        for j := i; j > 0 && s[j-1] > s[j]; j-- {
+            s[j-1], s[j] = s[j], s[j-1]
+        }
+    }
+}
+
+func firstNonEmpty(values ...string) string {
+    for _, v := range values {
+        if v != "" {
+            return v
+        }
+    }
+    return ""
+}
+
+// splitRepoSlug parses "owner/repo" into its parts. Rejects anything
+// that doesn't look like exactly one slash-separated pair.
+func splitRepoSlug(slug string) (owner, repo string, ok bool) {
+    slash := strings.Index(slug, "/")
+    if slash <= 0 || slash == len(slug)-1 {
+        return "", "", false
+    }
+    if strings.Contains(slug[slash+1:], "/") {
+        return "", "", false
+    }
+    return slug[:slash], slug[slash+1:], true
 }
