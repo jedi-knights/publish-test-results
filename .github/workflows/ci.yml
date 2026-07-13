@@ -3,25 +3,84 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "CHANGELOG.md"
+      - "VERSION"
+      - "README.md"
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.4
+          github-token: ${{ secrets.GH_TOKEN }}
+
   test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  # Dogfood the action against its own test run so every push produces
+  # a real check-run in this repo — the fastest way to notice a
+  # regression in the publishing path.
+  dogfood:
+    name: Publish own check-run
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       checks: write
       pull-requests: write
+
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
-
-      - name: go vet
-        run: go vet ./...
+          go-version-file: go.mod
+          cache: true
 
       - name: Build publish-test-results binary
         run: go build -o bin/publish-test-results ./cmd/publish-test-results
@@ -39,7 +98,7 @@ jobs:
           name: results-junit-xml
           path: results.xml
 
-      - name: Publish check-run (dogfood ourselves)
+      - name: Publish check-run
         if: always()
         env:
           GITHUB_TOKEN: ${{ github.token }}
