@@ -4,6 +4,10 @@ A fast GitHub Action that publishes multi-format test results as a drilldownable
 per-test check-run.
 
 ![CI](https://github.com/jedi-knights/publish-test-results/actions/workflows/ci.yml/badge.svg)
+![Release](https://github.com/jedi-knights/publish-test-results/actions/workflows/release.yml/badge.svg)
+![GoReleaser](https://github.com/jedi-knights/publish-test-results/actions/workflows/goreleaser.yml/badge.svg)
+![Badge](https://github.com/jedi-knights/publish-test-results/actions/workflows/badge.yml/badge.svg)
+[![Coverage](https://img.shields.io/badge/Coverage-0.0%25-lightgrey)](https://jedi-knights.github.io/publish-test-results/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Status: work in progress.** The scaffolding, intermediate representation,
