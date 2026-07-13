@@ -411,9 +411,13 @@ func TestTitle_AllBranches(t *testing.T) {
         t    Totals
         want string
     }{
-        {"success", Totals{Passed: 5, Total: 5}, "5 test(s) passed"},
-        {"failure", Totals{Passed: 2, Failed: 1, Errored: 1, Total: 4}, "2 failed of 4 test(s)"},
-        {"skipped", Totals{Skipped: 3, Total: 3}, "all 3 test(s) skipped"},
+        {"success plural", Totals{Passed: 5, Total: 5}, "5 tests passed"},
+        {"success singular", Totals{Passed: 1, Total: 1}, "1 test passed"},
+        {"failure only failed", Totals{Passed: 2, Failed: 2, Total: 4}, "2 failed of 4 tests"},
+        {"failure split", Totals{Passed: 2, Failed: 1, Errored: 1, Total: 4}, "1 failed, 1 errored of 4 tests"},
+        {"failure singular total", Totals{Failed: 1, Total: 1}, "1 failed of 1 test"},
+        {"skipped plural", Totals{Skipped: 3, Total: 3}, "all 3 tests skipped"},
+        {"skipped singular", Totals{Skipped: 1, Total: 1}, "all 1 test skipped"},
     }
 
     // Act / Assert
@@ -464,19 +468,212 @@ func TestBodyMarkdown_UnspecifiedSuite(t *testing.T) {
     }
 }
 
-func TestBodyMarkdown_LargeSuiteIsCollapsed(t *testing.T) {
-    // Arrange — 21 tests exceeds the 20-test collapseThreshold.
+func TestBodyMarkdown_AllPassSuiteCollapsesToOneLine(t *testing.T) {
+    // Arrange — 21 all-passing tests. Instead of 21 bullets of noise,
+    // the render should compress to a single "all N tests passed" line
+    // because none of the entries deserve individual attention.
     results := make([]ir.TestResult, 21)
     for i := range results {
-        results[i] = ir.TestResult{Suite: "big", Name: "t", Status: ir.StatusPassed}
+        results[i] = ir.TestResult{Suite: "big", Name: fmt.Sprintf("t%d", i), Status: ir.StatusPassed}
     }
 
     // Act
     md := BodyMarkdown(results)
 
     // Assert
-    if !strings.Contains(md, "<details><summary>Expand</summary>") {
-        t.Errorf("large suite should be collapsed: %q", md)
+    if !strings.Contains(md, "all 21 tests passed") {
+        t.Errorf("all-pass suite should collapse to summary line: %q", md)
+    }
+    // No individual bullets should leak through.
+    if strings.Contains(md, "`t0`") {
+        t.Errorf("individual test bullets must be hidden in all-pass suite: %q", md)
+    }
+}
+
+func TestBodyMarkdown_MixedSuiteShowsFailuresFirstAndCollapsesPasses(t *testing.T) {
+    // Arrange — one failure and two passes. Failure must appear before
+    // any pass, and passes must be hidden inside a <details> block so
+    // the eye lands on the failing test.
+    results := []ir.TestResult{
+        {Suite: "mix", Name: "PassA", Status: ir.StatusPassed},
+        {Suite: "mix", Name: "FailX", Status: ir.StatusFailed, Message: "boom"},
+        {Suite: "mix", Name: "PassB", Status: ir.StatusPassed},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert — FailX must render before PassA/PassB.
+    failIdx := strings.Index(md, "`FailX`")
+    passAIdx := strings.Index(md, "`PassA`")
+    if failIdx < 0 || passAIdx < 0 {
+        t.Fatalf("both tests must render: %q", md)
+    }
+    if failIdx > passAIdx {
+        t.Errorf("failure must render before passes: %q", md)
+    }
+    if !strings.Contains(md, "<details><summary>2 passed tests</summary>") {
+        t.Errorf("passes must be collapsed with count-bearing label: %q", md)
+    }
+}
+
+func TestBodyMarkdown_MixedSuiteOrdersFailedBeforeErroredBeforeSkipped(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Suite: "s", Name: "Sk", Status: ir.StatusSkipped},
+        {Suite: "s", Name: "Er", Status: ir.StatusError},
+        {Suite: "s", Name: "Fa", Status: ir.StatusFailed},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    fa := strings.Index(md, "`Fa`")
+    er := strings.Index(md, "`Er`")
+    sk := strings.Index(md, "`Sk`")
+    if fa >= er || er >= sk {
+        t.Errorf("expected failed < errored < skipped ordering, got fa=%d er=%d sk=%d in %q",
+            fa, er, sk, md)
+    }
+}
+
+func TestSummaryMarkdown_TrimsCommonModulePrefix(t *testing.T) {
+    // Arrange — three suites sharing a long common prefix. The rendered
+    // table should strip that prefix so the Suite column stays readable.
+    results := []ir.TestResult{
+        {Suite: "github.com/o/r/cmd/tool", Status: ir.StatusPassed},
+        {Suite: "github.com/o/r/internal/a", Status: ir.StatusPassed},
+        {Suite: "github.com/o/r/internal/b", Status: ir.StatusPassed},
+    }
+
+    // Act
+    md := SummaryMarkdown(results)
+
+    // Assert
+    if strings.Contains(md, "github.com/o/r/") {
+        t.Errorf("common prefix must be stripped: %q", md)
+    }
+    if !strings.Contains(md, "| cmd/tool |") ||
+        !strings.Contains(md, "| internal/a |") ||
+        !strings.Contains(md, "| internal/b |") {
+        t.Errorf("trimmed suite names missing: %q", md)
+    }
+}
+
+func TestBodyMarkdown_TrimsCommonModulePrefix(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Suite: "github.com/o/r/cmd/tool", Name: "T1", Status: ir.StatusPassed},
+        {Suite: "github.com/o/r/internal/a", Name: "T2", Status: ir.StatusPassed},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if strings.Contains(md, "github.com/o/r/") {
+        t.Errorf("common prefix must be stripped from headings: %q", md)
+    }
+    if !strings.Contains(md, "### cmd/tool ") || !strings.Contains(md, "### internal/a ") {
+        t.Errorf("trimmed suite headings missing: %q", md)
+    }
+}
+
+func TestBodyMarkdown_NestsSubtestsUnderParent(t *testing.T) {
+    // Arrange — a mixed suite so the passed block (which contains the
+    // subtests) actually renders. All-pass suites collapse and never
+    // exercise the nesting path.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestFail", Status: ir.StatusFailed, Message: "x"},
+        {Suite: "s", Name: "TestFoo", Status: ir.StatusPassed},
+        {Suite: "s", Name: "TestFoo/one", Status: ir.StatusPassed},
+        {Suite: "s", Name: "TestFoo/two", Status: ir.StatusPassed},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert — subtests must be indented two spaces beneath their parent bullet.
+    if !strings.Contains(md, "  - ✅ `TestFoo/one`") {
+        t.Errorf("subtest should be nested under its parent: %q", md)
+    }
+}
+
+func TestTitle_FailedAndErroredReportedSeparately(t *testing.T) {
+    // Arrange
+    got := Title(Totals{Passed: 5, Failed: 2, Errored: 3, Total: 10})
+
+    // Assert
+    want := "2 failed, 3 errored of 10 tests"
+    if got != want {
+        t.Errorf("Title = %q, want %q", got, want)
+    }
+}
+
+func TestTitle_OnlyErrored(t *testing.T) {
+    // Arrange
+    got := Title(Totals{Errored: 1, Total: 3, Passed: 2})
+
+    // Assert
+    if got != "1 errored of 3 tests" {
+        t.Errorf("Title = %q, want %q", got, "1 errored of 3 tests")
+    }
+}
+
+func TestSummaryMarkdown_GlanceBarLeadsSummary(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Suite: "a", Status: ir.StatusPassed},
+        {Suite: "a", Status: ir.StatusPassed},
+        {Suite: "a", Status: ir.StatusFailed},
+    }
+
+    // Act
+    md := SummaryMarkdown(results)
+
+    // Assert — glance bar must appear before the table and count both.
+    if !strings.Contains(md, "✅ 2") || !strings.Contains(md, "❌ 1") {
+        t.Errorf("glance bar must include nonzero counts: %q", md)
+    }
+    glanceIdx := strings.Index(md, "✅ 2")
+    tableIdx := strings.Index(md, "| Suite |")
+    if glanceIdx < 0 || tableIdx < 0 || glanceIdx > tableIdx {
+        t.Errorf("glance bar must precede the table: %q", md)
+    }
+}
+
+func TestBodyMarkdown_FailedTestShowsFileLine(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestBad", Status: ir.StatusFailed, File: "internal/x/foo.go", Line: 42, Message: "boom"},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert — location must appear as a suffix so readers can jump.
+    if !strings.Contains(md, "internal/x/foo.go:42") {
+        t.Errorf("failure line must expose File:Line: %q", md)
+    }
+}
+
+func TestBodyMarkdown_TruncatesMultilineMessage(t *testing.T) {
+    // Arrange — a stack-trace style message must not bleed the whole
+    // trace into a single bullet.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestX", Status: ir.StatusFailed, Message: "expected 1 got 2\ntraceback line 1\ntraceback line 2"},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "expected 1 got 2") {
+        t.Errorf("first line of message must be visible: %q", md)
+    }
+    if strings.Contains(md, "traceback line 1") {
+        t.Errorf("subsequent lines must be truncated from the bullet: %q", md)
     }
 }
 
