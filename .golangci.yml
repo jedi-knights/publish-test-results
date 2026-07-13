@@ -1,0 +1,63 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gocyclo
+    - revive
+
+  settings:
+    gocyclo:
+      # Flag functions with cyclomatic complexity > 7.
+      # min-complexity is the lowest value that gets reported, so 8 enforces ≤ 7.
+      min-complexity: 8
+
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+
+  exclusions:
+    rules:
+      # Deferred close on read-only resources (response body, file handles) —
+      # the error is not actionable and suppressing it is idiomatic Go.
+      - linters: [errcheck]
+        text: "Error return value of `(resp\\.Body|f)\\.Close` is not checked"
+
+      # CLI diagnostic writes to stdout/stderr — errors surface on the next
+      # write and are not recoverable here; inline checking is noise.
+      - linters: [errcheck]
+        path: "cmd/publish-test-results/main\\.go"
+        text: "Error return value of `fmt\\.Fprint"
+
+      # Test files: relax errcheck and complexity — test helpers often chain
+      # calls and assertions without explicit error propagation.
+      - linters: [errcheck, gocyclo]
+        path: "_test\\.go"
+
+      # CLI orchestration in main.go: Run is a sequential multi-step pipeline
+      # whose complexity comes from flag parsing + wiring; splitting further
+      # would obscure the top-level flow.
+      - linters: [gocyclo]
+        path: "cmd/publish-test-results/main\\.go"
+
+      # Retry loop in Client.do: the branching is intrinsic to the
+      # retry/backoff state machine (transport error / non-2xx / Retry-After
+      # / attempt cap); extracting helpers would fragment the loop without
+      # reducing real complexity.
+      - linters: [gocyclo]
+        path: "internal/publish/client\\.go"
+
+      # Parser Parse loops are event-driven state machines (go test -json
+      # Action dispatch, JUnit XML token walk) whose branching maps 1:1 to
+      # the input grammar. Splitting would break the loop-local scanner state.
+      - linters: [gocyclo]
+        path: "internal/parse/(gotest|junit)\\.go"
+
+      # summary.go: pre-refactor complexity that lands cleanly under 8 in
+      # #6 (feat/publish-check-run-display). Excluded here so this PR is
+      # self-contained; the exclusion becomes a no-op once #6 merges.
+      - linters: [gocyclo]
+        path: "internal/publish/summary\\.go"

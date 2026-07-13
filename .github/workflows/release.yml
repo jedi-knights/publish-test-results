@@ -1,0 +1,41 @@
+name: Release
+
+# Runs after CI passes on main. go-semantic-release analyzes conventional
+# commits since the last tag to determine whether a release is warranted,
+# and if so, computes the next semantic version, writes CHANGELOG.md and
+# VERSION, creates the git tag, and pushes back to main with [skip ci].
+# The resulting v* tag then triggers goreleaser.yml for binary distribution.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    # Only run when CI passed — skip if it failed or was cancelled.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history is required for commit analysis across all tags.
+          fetch-depth: 0
+          # Use PAT so go-semantic-release can push the VERSION/CHANGELOG
+          # commit and the tag back to main.
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "semantic-release-bot"
+          git config --global user.email "semantic-release-bot@users.noreply.github.com"
+
+      - uses: jedi-knights/go-semantic-release@v0
+        with:
+          github_token: ${{ secrets.GH_TOKEN }}
