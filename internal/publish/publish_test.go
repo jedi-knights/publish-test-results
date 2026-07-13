@@ -3,6 +3,7 @@ package publish
 import (
     "context"
     "encoding/json"
+    "errors"
     "fmt"
     "io"
     "net/http"
@@ -381,6 +382,472 @@ func TestChunk(t *testing.T) {
     }
     if Chunk(nil, 3) != nil {
         t.Errorf("Chunk(nil) should be nil")
+    }
+}
+
+func TestCompute_AllStatusBranches(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Status: ir.StatusPassed},
+        {Status: ir.StatusFailed},
+        {Status: ir.StatusSkipped},
+        {Status: ir.StatusError},
+    }
+
+    // Act
+    got := Compute(results)
+
+    // Assert
+    want := Totals{Passed: 1, Failed: 1, Skipped: 1, Errored: 1, Total: 4}
+    if got != want {
+        t.Errorf("Compute = %+v, want %+v", got, want)
+    }
+}
+
+func TestTitle_AllBranches(t *testing.T) {
+    // Arrange
+    cases := []struct {
+        name string
+        t    Totals
+        want string
+    }{
+        {"success", Totals{Passed: 5, Total: 5}, "5 test(s) passed"},
+        {"failure", Totals{Passed: 2, Failed: 1, Errored: 1, Total: 4}, "2 failed of 4 test(s)"},
+        {"skipped", Totals{Skipped: 3, Total: 3}, "all 3 test(s) skipped"},
+    }
+
+    // Act / Assert
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            if got := Title(tc.t); got != tc.want {
+                t.Errorf("Title = %q, want %q", got, tc.want)
+            }
+        })
+    }
+}
+
+func TestSummaryMarkdown_UnspecifiedSuiteAndAllStatuses(t *testing.T) {
+    // Arrange — empty Suite hits the "(unspecified)" fallback; four
+    // statuses hit all four counter branches inside SummaryMarkdown.
+    results := []ir.TestResult{
+        {Status: ir.StatusPassed},
+        {Status: ir.StatusFailed},
+        {Status: ir.StatusSkipped},
+        {Status: ir.StatusError},
+    }
+
+    // Act
+    md := SummaryMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "(unspecified)") {
+        t.Errorf("missing fallback suite name: %q", md)
+    }
+    // Totals row should show 1 of each.
+    if !strings.Contains(md, "| **Total** | **1** | **1** | **1** | **1** | **4** |") {
+        t.Errorf("wrong totals row: %q", md)
+    }
+}
+
+func TestBodyMarkdown_UnspecifiedSuite(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Name: "orphan", Status: ir.StatusPassed},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "(unspecified)") {
+        t.Errorf("missing fallback suite name: %q", md)
+    }
+}
+
+func TestBodyMarkdown_LargeSuiteIsCollapsed(t *testing.T) {
+    // Arrange — 21 tests exceeds the 20-test collapseThreshold.
+    results := make([]ir.TestResult, 21)
+    for i := range results {
+        results[i] = ir.TestResult{Suite: "big", Name: "t", Status: ir.StatusPassed}
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "<details><summary>Expand</summary>") {
+        t.Errorf("large suite should be collapsed: %q", md)
+    }
+}
+
+func TestStatusIcon_AllArms(t *testing.T) {
+    // Arrange
+    cases := []struct {
+        s    ir.Status
+        want string
+    }{
+        {ir.StatusPassed, "✅"},
+        {ir.StatusFailed, "❌"},
+        {ir.StatusSkipped, "⏭️"},
+        {ir.StatusError, "⚠️"},
+        {ir.Status(99), "❓"}, // unknown → default arm
+    }
+
+    // Act / Assert
+    for _, tc := range cases {
+        if got := statusIcon(tc.s); got != tc.want {
+            t.Errorf("statusIcon(%v) = %q, want %q", tc.s, got, tc.want)
+        }
+    }
+}
+
+func TestAnnotationsFor_EmptyFileSkipped(t *testing.T) {
+    // Arrange — even with IncludePassed on, a result with empty File is
+    // skipped (Checks API rejects annotations without a path).
+    results := []ir.TestResult{
+        {Name: "no-file", Status: ir.StatusFailed, Message: "boom"},
+    }
+
+    // Act
+    got := AnnotationsFor(results, Options{IncludePassed: true, IncludeSkipped: true})
+
+    // Assert
+    if len(got) != 0 {
+        t.Errorf("annotations = %d, want 0 (empty File must be skipped)", len(got))
+    }
+}
+
+func TestAnnotationsFor_PassedGetsPassedMessage(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Name: "p", Status: ir.StatusPassed, File: "a.go", Line: 1},
+    }
+
+    // Act
+    got := AnnotationsFor(results, Options{IncludePassed: true})
+
+    // Assert
+    if len(got) != 1 {
+        t.Fatalf("annotations = %d, want 1", len(got))
+    }
+    if got[0].Message != "passed" {
+        t.Errorf("Message = %q, want %q", got[0].Message, "passed")
+    }
+    if got[0].AnnotationLevel != LevelNotice {
+        t.Errorf("Level = %q, want notice", got[0].AnnotationLevel)
+    }
+}
+
+func TestAnnotationsFor_FallbackMessageUsedForEmptyOriginal(t *testing.T) {
+    // Arrange — Message is empty on the source result; annotationFor
+    // should fall back to the status-word default.
+    results := []ir.TestResult{
+        {Name: "f", Status: ir.StatusFailed, File: "a.go", Line: 3},   // fallback "failed"
+        {Name: "s", Status: ir.StatusSkipped, File: "a.go", Line: 4},  // fallback "skipped"
+    }
+
+    // Act
+    got := AnnotationsFor(results, Options{IncludeSkipped: true})
+
+    // Assert
+    if len(got) != 2 {
+        t.Fatalf("annotations = %d, want 2", len(got))
+    }
+    byName := map[string]Annotation{got[0].Title: got[0], got[1].Title: got[1]}
+    if byName["f"].Message != "failed" {
+        t.Errorf("failed Message = %q, want fallback %q", byName["f"].Message, "failed")
+    }
+    if byName["s"].Message != "skipped" {
+        t.Errorf("skipped Message = %q, want fallback %q", byName["s"].Message, "skipped")
+    }
+}
+
+func TestAnnotationFor_LineZeroDefaultsToOne(t *testing.T) {
+    // Arrange — Line=0 should be promoted to 1 so the Checks API accepts it.
+    got := annotationFor(ir.TestResult{Name: "n", File: "a.go", Line: 0, Status: ir.StatusFailed})
+
+    // Assert
+    if got.StartLine != 1 || got.EndLine != 1 {
+        t.Errorf("Line=0 should default to 1, got (%d, %d)", got.StartLine, got.EndLine)
+    }
+}
+
+func TestChunk_ZeroSizeUsesMax(t *testing.T) {
+    // Arrange — n <= 0 hits the guard that substitutes MaxAnnotationsPerRequest.
+    a := make([]Annotation, 3)
+
+    // Act
+    got := Chunk(a, 0)
+
+    // Assert
+    if len(got) != 1 || len(got[0]) != 3 {
+        t.Errorf("Chunk with n=0 should produce one batch of 3, got %v", got)
+    }
+}
+
+func TestNewClient_Defaults(t *testing.T) {
+    // Arrange / Act
+    c := NewClient("token", "owner", "repo")
+
+    // Assert
+    if c.Token != "token" || c.Owner != "owner" || c.Repo != "repo" {
+        t.Errorf("identity fields = %q/%q/%q", c.Token, c.Owner, c.Repo)
+    }
+    if c.BaseURL != "https://api.github.com" {
+        t.Errorf("BaseURL = %q, want production default", c.BaseURL)
+    }
+    if c.MaxRetries != 3 {
+        t.Errorf("MaxRetries = %d, want 3", c.MaxRetries)
+    }
+    if c.HTTPClient == nil {
+        t.Errorf("HTTPClient must be set")
+    }
+    if c.Now == nil {
+        t.Errorf("Now must be set")
+    }
+    if c.Sleep == nil {
+        t.Errorf("Sleep must be set")
+    }
+}
+
+func TestShouldRetryTransport(t *testing.T) {
+    // Arrange / Act / Assert — pure predicate, two inputs.
+    if shouldRetryTransport(nil) {
+        t.Errorf("nil error must not be retryable")
+    }
+    if !shouldRetryTransport(fmt.Errorf("dial timeout")) {
+        t.Errorf("non-nil error must be retryable")
+    }
+}
+
+func TestParseRetryAfter(t *testing.T) {
+    // Arrange
+    cases := []struct {
+        name string
+        in   string
+        want time.Duration
+    }{
+        {"empty", "", 0},
+        {"seconds", "5", 5 * time.Second},
+        {"zero", "0", 0},
+        {"negative", "-3", 0},
+        {"non-numeric", "later", 0},
+    }
+
+    // Act / Assert
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            if got := parseRetryAfter(tc.in); got != tc.want {
+                t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.in, got, tc.want)
+            }
+        })
+    }
+}
+
+func TestBackoffDuration_CapsAt10s(t *testing.T) {
+    // Arrange / Act — attempt=6 → 500ms << 5 = 16s, should cap at 10s.
+    got := backoffDuration(6)
+
+    // Assert
+    if got != 10*time.Second {
+        t.Errorf("backoffDuration(6) = %v, want 10s cap", got)
+    }
+}
+
+func TestPublish_HeadSHARequired(t *testing.T) {
+    m := newMockServer()
+    defer m.Close()
+    c := newTestClient(t, m.URL())
+
+    _, err := Publish(context.Background(), c, Config{HeadSHA: ""}, nil)
+    if err == nil {
+        t.Fatal("expected error for empty HeadSHA")
+    }
+    if !strings.Contains(err.Error(), "HeadSHA is required") {
+        t.Errorf("unexpected error: %v", err)
+    }
+}
+
+func TestPublish_DefaultsCheckNameWhenEmpty(t *testing.T) {
+    m := newMockServer()
+    defer m.Close()
+    c := newTestClient(t, m.URL())
+
+    _, err := Publish(context.Background(), c, Config{HeadSHA: "sha"}, nil)
+    if err != nil {
+        t.Fatalf("Publish: %v", err)
+    }
+    var create CheckRunCreate
+    if err := json.Unmarshal(m.Requests[0].Body, &create); err != nil {
+        t.Fatalf("decode: %v", err)
+    }
+    if create.Name != "Test Results" {
+        t.Errorf("Name = %q, want default", create.Name)
+    }
+}
+
+func TestPublish_UpdateCheckRun_ErrorPropagates(t *testing.T) {
+    // Arrange — CREATE succeeds, first PATCH returns 400 non-retryable.
+    m := newMockServer()
+    defer m.Close()
+    m.Responses = []mockResponse{
+        {StatusCode: 201, Body: CheckRunResponse{ID: 7, HTMLURL: "https://x"}},
+        {StatusCode: 400, Body: map[string]string{"message": "bad update"}},
+    }
+    c := newTestClient(t, m.URL())
+
+    // 60 results — one CREATE (50) + one PATCH (10).
+    results := make([]ir.TestResult, 60)
+    for i := range results {
+        results[i] = ir.TestResult{Suite: "x", Name: "n", Status: ir.StatusPassed, File: "a.go", Line: i + 1}
+    }
+
+    // Act
+    _, err := Publish(context.Background(), c, Config{
+        HeadSHA: "sha", Options: Options{IncludePassed: true},
+    }, results)
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected error from failing PATCH")
+    }
+    if !strings.Contains(err.Error(), "update check-run batch 2") {
+        t.Errorf("unexpected error: %v", err)
+    }
+}
+
+func TestClient_Do_Non2xxReturnsAPIError(t *testing.T) {
+    // Arrange — 404 is not retryable, so we should get an APIError back
+    // rather than the exhausted-retries error.
+    m := newMockServer()
+    defer m.Close()
+    m.Responses = []mockResponse{
+        {StatusCode: 404, Body: map[string]string{"message": "gone"}},
+    }
+    c := newTestClient(t, m.URL())
+
+    // Act
+    _, err := Publish(context.Background(), c, Config{HeadSHA: "sha"}, nil)
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected APIError")
+    }
+    var apiErr *APIError
+    if !errors.As(err, &apiErr) {
+        t.Errorf("expected APIError, got %T: %v", err, err)
+    }
+    if apiErr.StatusCode != 404 {
+        t.Errorf("StatusCode = %d, want 404", apiErr.StatusCode)
+    }
+    if !strings.Contains(apiErr.Error(), "404") {
+        t.Errorf("Error() should include status: %q", apiErr.Error())
+    }
+}
+
+func TestClient_Do_Non2xxBodyDecodeError(t *testing.T) {
+    // Arrange — 200 with invalid JSON body forces the response decode
+    // error path.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        _, _ = w.Write([]byte("not json"))
+    }))
+    defer srv.Close()
+
+    c := &Client{
+        HTTPClient: &http.Client{Timeout: 1 * time.Second},
+        BaseURL:    srv.URL,
+        Token:      "t",
+        Owner:      "o",
+        Repo:       "r",
+        MaxRetries: 0,
+        Now:        time.Now,
+        Sleep:      func(time.Duration) {},
+    }
+
+    // Act
+    _, err := Publish(context.Background(), c, Config{HeadSHA: "sha"}, nil)
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected decode error")
+    }
+    if !strings.Contains(err.Error(), "decode response") {
+        t.Errorf("expected 'decode response' in error, got: %v", err)
+    }
+}
+
+func TestClient_Do_RetryAfterHeaderHonored(t *testing.T) {
+    // Arrange — 429 with Retry-After: 1 exercises the Sleep(wait)
+    // branch inside do(). Client.Sleep is stubbed so no real delay.
+    var sleeps []time.Duration
+    m := newMockServer()
+    defer m.Close()
+    m.Responses = []mockResponse{
+        {StatusCode: 429, Body: map[string]string{"m": "slow"}, Headers: map[string]string{"Retry-After": "1"}},
+        {StatusCode: 201, Body: CheckRunResponse{ID: 1, HTMLURL: "https://ok"}},
+    }
+    c := newTestClient(t, m.URL())
+    c.Sleep = func(d time.Duration) { sleeps = append(sleeps, d) }
+
+    // Act
+    _, err := Publish(context.Background(), c, Config{HeadSHA: "sha"}, nil)
+    if err != nil {
+        t.Fatalf("Publish: %v", err)
+    }
+
+    // Assert — expect at least one Sleep of 1s (the Retry-After value).
+    // There may also be a backoff Sleep between attempts.
+    found := false
+    for _, d := range sleeps {
+        if d == time.Second {
+            found = true
+            break
+        }
+    }
+    if !found {
+        t.Errorf("expected a Sleep(1s) from Retry-After, got %v", sleeps)
+    }
+}
+
+func TestClient_Do_TransportErrorRetriesThenGivesUp(t *testing.T) {
+    // Arrange — the handler hijacks and immediately closes the
+    // connection, forcing a transport-level error on the client. This
+    // avoids the TOCTOU window of closing a listener and racing another
+    // process for the same port.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        hj, ok := w.(http.Hijacker)
+        if !ok {
+            t.Fatal("ResponseWriter does not support Hijack")
+        }
+        conn, _, err := hj.Hijack()
+        if err != nil {
+            t.Fatalf("Hijack: %v", err)
+        }
+        _ = conn.Close()
+    }))
+    defer srv.Close()
+
+    c := &Client{
+        HTTPClient: &http.Client{Timeout: 1 * time.Second},
+        BaseURL:    srv.URL,
+        Token:      "t",
+        Owner:      "o",
+        Repo:       "r",
+        MaxRetries: 1,
+        Now:        time.Now,
+        Sleep:      func(time.Duration) {},
+    }
+
+    // Act
+    _, err := Publish(context.Background(), c, Config{HeadSHA: "sha"}, nil)
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected transport error")
+    }
+    if !strings.Contains(err.Error(), "giving up after") {
+        t.Errorf("expected exhausted-retries error, got: %v", err)
     }
 }
 

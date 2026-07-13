@@ -108,6 +108,43 @@ func TestDetect_EmptyInput(t *testing.T) {
     }
 }
 
+// erroringReader returns a synthetic error on any Read. Exercises
+// the Detect preview-read error branch (which is distinct from EOF /
+// ErrUnexpectedEOF — those are treated as short-input successes).
+type erroringReader struct{ err error }
+
+func (r erroringReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestDetect_PreviewReadError(t *testing.T) {
+    resetRegistry(t, []Parser{&stubParser{name: "any", prefix: ""}})
+
+    _, _, err := Detect(erroringReader{err: errors.New("io broke")})
+    if err == nil {
+        t.Fatal("expected preview read error")
+    }
+    if !strings.Contains(err.Error(), "preview read") {
+        t.Errorf("expected wrapped preview-read error, got %v", err)
+    }
+}
+
+func TestDetect_ParserErrorPropagates(t *testing.T) {
+    boom := errors.New("parse boom")
+    resetRegistry(t, []Parser{
+        &stubParser{name: "sad", prefix: "X", err: boom},
+    })
+
+    _, name, err := Detect(strings.NewReader("XYZ"))
+    if err == nil {
+        t.Fatal("expected error from parser")
+    }
+    if !errors.Is(err, boom) {
+        t.Errorf("error should wrap %v, got %v", boom, err)
+    }
+    if name != "sad" {
+        t.Errorf("name = %q, want sad (matched parser's Name even on error)", name)
+    }
+}
+
 func TestRegister_AppendsInOrder(t *testing.T) {
     resetRegistry(t, nil)
     Register(&stubParser{name: "one", prefix: "1"})

@@ -6,9 +6,13 @@ import (
     "io"
     "net/http"
     "net/http/httptest"
+    "os"
     "path/filepath"
     "strings"
     "testing"
+
+    "github.com/jedi-knights/publish-test-results/internal/ir"
+    "github.com/jedi-knights/publish-test-results/internal/publish"
 )
 
 func TestRun_NoArgsPrintsUsage(t *testing.T) {
@@ -234,6 +238,335 @@ func TestExpandGlobs(t *testing.T) {
     }
 }
 
+func TestExpandGlobs_InvalidPattern(t *testing.T) {
+    // Malformed glob (unmatched bracket) — filepath.Glob returns an error.
+    if _, err := expandGlobs("["); err == nil {
+        t.Fatal("expected error on malformed pattern")
+    }
+}
+
+// writeSummaryTo creates an empty file at a temp path and returns it,
+// suitable for GITHUB_STEP_SUMMARY.
+func writeSummaryTo(t *testing.T) string {
+    t.Helper()
+    path := filepath.Join(t.TempDir(), "summary.md")
+    if err := os.WriteFile(path, nil, 0o644); err != nil {
+        t.Fatalf("prep summary file: %v", err)
+    }
+    return path
+}
+
+func TestWriteStepSummary_WritesSummaryAndLink(t *testing.T) {
+    // Arrange
+    path := writeSummaryTo(t)
+    results := []ir.TestResult{
+        {Suite: "s", Status: ir.StatusPassed},
+    }
+    resp := &publish.CheckRunResponse{HTMLURL: "https://gh/runs/1"}
+
+    // Act
+    if err := writeStepSummary(path, results, resp); err != nil {
+        t.Fatalf("writeStepSummary: %v", err)
+    }
+
+    // Assert
+    body, err := os.ReadFile(path)
+    if err != nil {
+        t.Fatalf("read summary: %v", err)
+    }
+    got := string(body)
+    if !strings.Contains(got, "## Test Results") {
+        t.Errorf("missing header: %q", got)
+    }
+    if !strings.Contains(got, "https://gh/runs/1") {
+        t.Errorf("missing check-run link: %q", got)
+    }
+}
+
+func TestWriteStepSummary_NilResponseOmitsLink(t *testing.T) {
+    path := writeSummaryTo(t)
+    if err := writeStepSummary(path, nil, nil); err != nil {
+        t.Fatalf("writeStepSummary: %v", err)
+    }
+    body, _ := os.ReadFile(path)
+    if strings.Contains(string(body), "[Open the full check-run") {
+        t.Errorf("nil response should not emit a link, got: %q", string(body))
+    }
+}
+
+func TestWriteStepSummary_OpenFileFails(t *testing.T) {
+    // Writing to a directory path fails at OpenFile.
+    if err := writeStepSummary(t.TempDir(), nil, nil); err == nil {
+        t.Fatal("expected error when path is a directory")
+    }
+}
+
+func TestRun_WritesStepSummaryWhenEnvSet(t *testing.T) {
+    // Arrange
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://ok"})
+    }))
+    defer srv.Close()
+
+    summaryPath := writeSummaryTo(t)
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":        "t",
+        "GITHUB_SHA":          "sha",
+        "GITHUB_REPOSITORY":   "o/r",
+        "GITHUB_API_URL":      srv.URL,
+        "GITHUB_STEP_SUMMARY": summaryPath,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    body, _ := os.ReadFile(summaryPath)
+    if !strings.Contains(string(body), "## Test Results") {
+        t.Errorf("summary file not populated: %q", string(body))
+    }
+}
+
+func TestRun_PublishAPIFailureIsUsageError(t *testing.T) {
+    // Arrange — 400 is not retryable; publish surfaces the APIError.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusBadRequest)
+        _ = json.NewEncoder(w).Encode(map[string]string{"message": "bad request"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":      "t",
+        "GITHUB_SHA":        "sha",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_API_URL":    srv.URL,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+    if !strings.Contains(stderr.String(), "publish failed") {
+        t.Errorf("stderr missing 'publish failed': %q", stderr.String())
+    }
+}
+
+func TestRun_ParseErrorIsUsageError(t *testing.T) {
+    // Arrange — a file no registered parser recognizes.
+    tmp := filepath.Join(t.TempDir(), "junk.xml")
+    if err := os.WriteFile(tmp, []byte("plain text, no known format"), 0o644); err != nil {
+        t.Fatalf("prep fixture: %v", err)
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + tmp, "--dry-run"}, &stdout, &stderr, mapEnv{})
+
+    // Assert
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+    if !strings.Contains(stderr.String(), "parse ") {
+        t.Errorf("stderr should mention parse: %q", stderr.String())
+    }
+}
+
+func TestRun_FlagParseErrorIsUsageError(t *testing.T) {
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--not-a-real-flag"}, &stdout, &stderr, mapEnv{})
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+}
+
+func TestRun_GlobErrorIsUsageError(t *testing.T) {
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=[", "--dry-run"}, &stdout, &stderr, mapEnv{})
+    if code != exitUsage {
+        t.Errorf("code = %d, want exitUsage", code)
+    }
+    if !strings.Contains(stderr.String(), "glob error") {
+        t.Errorf("stderr missing 'glob error': %q", stderr.String())
+    }
+}
+
+func TestRun_LocatorFillsMatchingNames(t *testing.T) {
+    // Arrange — build a JUnit fixture whose test names match the
+    // locator's own gotest fixture (TestOne, TestTwo, TestThree). This
+    // reliably triggers the located>0 branch.
+    fixture := filepath.Join(t.TempDir(), "junit.xml")
+    body := `<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="s">
+    <testcase name="TestOne" classname="s"/>
+    <testcase name="TestTwo" classname="s"/>
+    <testcase name="TestThree" classname="s"/>
+  </testsuite>
+</testsuites>`
+    if err := os.WriteFile(fixture, []byte(body), 0o644); err != nil {
+        t.Fatalf("write fixture: %v", err)
+    }
+    sourceRoot := filepath.Join("..", "..", "testdata", "locate", "gotest")
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture, "--dry-run", "--source-root=" + sourceRoot},
+        &stdout, &stderr, mapEnv{})
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    if !strings.Contains(stdout.String(), "located: 3") {
+        t.Errorf("stdout should show located count: %q", stdout.String())
+    }
+}
+
+func TestRun_LocatedLinePrintedOnPublish(t *testing.T) {
+    // Arrange — publish (non-dry-run) with locator matches. The
+    // "located X test(s)" print in the publish path only fires when
+    // located > 0.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://ok"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join(t.TempDir(), "junit.xml")
+    body := `<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="s">
+    <testcase name="TestOne" classname="s"/>
+  </testsuite>
+</testsuites>`
+    if err := os.WriteFile(fixture, []byte(body), 0o644); err != nil {
+        t.Fatalf("write fixture: %v", err)
+    }
+    sourceRoot := filepath.Join("..", "..", "testdata", "locate", "gotest")
+    envs := mapEnv{
+        "GITHUB_TOKEN":      "t",
+        "GITHUB_SHA":        "sha",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_API_URL":    srv.URL,
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture, "--source-root=" + sourceRoot}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    if !strings.Contains(stdout.String(), "located 1 test(s) via filesystem inference") {
+        t.Errorf("stdout should include located line, got: %q", stdout.String())
+    }
+}
+
+func TestRun_StepSummaryWriteFailureIsWarning(t *testing.T) {
+    // Arrange — env points at a directory, so writeStepSummary fails.
+    // The warning is emitted but the overall run still succeeds.
+    srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        w.WriteHeader(http.StatusCreated)
+        _ = json.NewEncoder(w).Encode(map[string]any{"id": int64(1), "html_url": "https://ok"})
+    }))
+    defer srv.Close()
+
+    fixture := filepath.Join("..", "..", "testdata", "junit-surefire", "with-location-attr.xml")
+    envs := mapEnv{
+        "GITHUB_TOKEN":        "t",
+        "GITHUB_SHA":          "sha",
+        "GITHUB_REPOSITORY":   "o/r",
+        "GITHUB_API_URL":      srv.URL,
+        "GITHUB_STEP_SUMMARY": t.TempDir(), // directory, not a file
+    }
+
+    // Act
+    var stdout, stderr bytes.Buffer
+    code := run([]string{"--files=" + fixture}, &stdout, &stderr, envs)
+
+    // Assert
+    if code != exitOK {
+        t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+    }
+    if !strings.Contains(stderr.String(), "warning: failed to write step summary") {
+        t.Errorf("expected warning in stderr, got: %q", stderr.String())
+    }
+}
+
+func TestPrintSummary_AllStatuses(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Status: ir.StatusPassed},
+        {Status: ir.StatusFailed},
+        {Status: ir.StatusSkipped},
+        {Status: ir.StatusError},
+    }
+    parsers := map[string]int{"junit": 4}
+
+    // Act
+    var buf bytes.Buffer
+    printSummary(&buf, results, parsers, 2)
+
+    // Assert
+    got := buf.String()
+    for _, want := range []string{"passed:  1", "failed:  1", "skipped: 1", "errored: 1", "located: 2"} {
+        if !strings.Contains(got, want) {
+            t.Errorf("missing %q in: %s", want, got)
+        }
+    }
+}
+
+func TestSortStrings(t *testing.T) {
+    // Arrange
+    got := []string{"c", "a", "b", "aa"}
+
+    // Act
+    sortStrings(got)
+
+    // Assert
+    want := []string{"a", "aa", "b", "c"}
+    for i := range want {
+        if got[i] != want[i] {
+            t.Errorf("sortStrings[%d] = %q, want %q; full = %v", i, got[i], want[i], got)
+        }
+    }
+}
+
+// firstNonEmpty in the main package is variadic; the parse package has
+// a differently-signatured binary firstNonEmpty tested in
+// internal/parse/junit_test.go. Do not consolidate.
+func TestFirstNonEmpty(t *testing.T) {
+    // Arrange
+    cases := []struct {
+        args []string
+        want string
+    }{
+        {[]string{"", "", "third"}, "third"},
+        {[]string{"first"}, "first"},
+        {[]string{}, ""},
+        {[]string{""}, ""},
+    }
+
+    // Act / Assert
+    for _, tc := range cases {
+        if got := firstNonEmpty(tc.args...); got != tc.want {
+            t.Errorf("firstNonEmpty(%v) = %q, want %q", tc.args, got, tc.want)
+        }
+    }
+}
+
 func TestExpandGlobs_MultipleAndEmpty(t *testing.T) {
     matches, err := expandGlobs("../../testdata/junit-ant/*.xml,,,")
     if err != nil {
@@ -265,5 +598,153 @@ func TestSplitRepoSlug(t *testing.T) {
             t.Errorf("splitRepoSlug(%q) = (%q, %q, %v); want (%q, %q, %v)",
                 tc.in, o, r, ok, tc.wantOwner, tc.wantRepo, tc.wantOK)
         }
+    }
+}
+
+func TestResolveFilePaths_LeavesEmptyAndAbsoluteAlone(t *testing.T) {
+    // Arrange — empty File must be left as-is (no path to resolve),
+    // and absolute paths must be left untouched (no assumption about
+    // where an absolute path is anchored).
+    root := t.TempDir()
+    results := []ir.TestResult{
+        {Name: "empty", File: ""},
+        {Name: "abs", File: "/absolute/foo.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    if results[0].File != "" {
+        t.Errorf("empty File was modified: %q", results[0].File)
+    }
+    if results[1].File != "/absolute/foo.go" {
+        t.Errorf("absolute File was rewritten: %q", results[1].File)
+    }
+}
+
+func TestResolveFilePaths_ResolvesSuiteRelativePath(t *testing.T) {
+    // Arrange — producer emitted File relative to the suite's cwd,
+    // e.g. ctestprobe running in compression/rle/ stamps
+    // "tests/test_rle.c". The real file lives at
+    // "<source-root>/compression/rle/tests/test_rle.c".
+    root := t.TempDir()
+    suitePath := filepath.Join(root, "compression", "rle", "tests")
+    if err := os.MkdirAll(suitePath, 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    real := filepath.Join(suitePath, "test_rle.c")
+    if err := os.WriteFile(real, nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    results := []ir.TestResult{
+        {Suite: "compression/rle", File: "tests/test_rle.c"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert — File should now be repo-relative.
+    want := filepath.Join("compression", "rle", "tests", "test_rle.c")
+    if results[0].File != want {
+        t.Errorf("File = %q, want %q", results[0].File, want)
+    }
+}
+
+func TestResolveFilePaths_ResolvesClassRelativePath(t *testing.T) {
+    // Arrange — some producers put the package-like key on Class
+    // rather than Suite. resolveFilePaths tries Class as a separate
+    // candidate when it differs from Suite.
+    root := t.TempDir()
+    classPath := filepath.Join(root, "libs", "codec", "src")
+    if err := os.MkdirAll(classPath, 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    real := filepath.Join(classPath, "codec.go")
+    if err := os.WriteFile(real, nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    results := []ir.TestResult{
+        {Suite: "unrelated", Class: "libs/codec", File: "src/codec.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    want := filepath.Join("libs", "codec", "src", "codec.go")
+    if results[0].File != want {
+        t.Errorf("File = %q, want %q", results[0].File, want)
+    }
+}
+
+func TestResolveFilePaths_ResolvesSourceRootRelativePath(t *testing.T) {
+    // Arrange — File already relative to source-root (e.g. Go test
+    // output). Neither suite nor class prefixes apply.
+    root := t.TempDir()
+    if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    if err := os.WriteFile(filepath.Join(root, "pkg", "thing.go"), nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    results := []ir.TestResult{
+        {File: "pkg/thing.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    want := filepath.Join("pkg", "thing.go")
+    if results[0].File != want {
+        t.Errorf("File = %q, want %q", results[0].File, want)
+    }
+}
+
+func TestResolveFilePaths_RejectsCandidateOutsideSourceRoot(t *testing.T) {
+    // Arrange — a candidate that resolves to a real file outside
+    // source-root must be rejected. `filepath.Rel` would produce a
+    // path like "../sibling.txt" that GitHub cannot render.
+    tmpBase := t.TempDir()
+    innerRoot := filepath.Join(tmpBase, "inner")
+    if err := os.MkdirAll(innerRoot, 0o755); err != nil {
+        t.Fatalf("mkdir: %v", err)
+    }
+    // Put the real file OUTSIDE innerRoot but reachable via `..`.
+    outside := filepath.Join(tmpBase, "sibling.txt")
+    if err := os.WriteFile(outside, nil, 0o644); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    // Suite="..", so a Join(root, Suite, File) candidate resolves to
+    // tmpBase/sibling.txt — outside innerRoot.
+    results := []ir.TestResult{
+        {Suite: "..", File: "sibling.txt"},
+    }
+
+    // Act
+    resolveFilePaths(results, innerRoot)
+
+    // Assert — File must not be rewritten to a "../..." path.
+    if strings.HasPrefix(results[0].File, "..") {
+        t.Errorf("File resolved to escape path %q; expected rejection", results[0].File)
+    }
+}
+
+func TestResolveFilePaths_UnresolvableIsLeftAsIs(t *testing.T) {
+    // Arrange — no candidate exists on disk. resolveFilePaths is
+    // best-effort; unresolved entries are preserved for the summary
+    // table even though annotations for them won't render.
+    root := t.TempDir()
+    results := []ir.TestResult{
+        {Suite: "s", File: "does/not/exist.go"},
+    }
+
+    // Act
+    resolveFilePaths(results, root)
+
+    // Assert
+    if results[0].File != "does/not/exist.go" {
+        t.Errorf("unresolvable File was modified: %q", results[0].File)
     }
 }

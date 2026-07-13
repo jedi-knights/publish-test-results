@@ -1,6 +1,7 @@
 package parse
 
 import (
+    "errors"
     "os"
     "path/filepath"
     "strings"
@@ -200,4 +201,166 @@ func keysOf(m map[string]ir.TestResult) []string {
         out = append(out, k)
     }
     return out
+}
+
+func TestGoTest_BlankLinesAreSkipped(t *testing.T) {
+    // Arrange — interleave blank lines between valid events.
+    input := strings.Join([]string{
+        `{"Action":"run","Package":"foo","Test":"TestA"}`,
+        ``,
+        ``,
+        `{"Action":"pass","Package":"foo","Test":"TestA","Elapsed":0.01}`,
+    }, "\n")
+
+    // Act
+    report, err := goTestParser{}.Parse(strings.NewReader(input))
+    if err != nil {
+        t.Fatalf("Parse: %v", err)
+    }
+
+    // Assert
+    if len(report.Results) != 1 {
+        t.Errorf("Results = %d, want 1", len(report.Results))
+    }
+}
+
+func TestGoTest_UnterminatedTestBecomesError(t *testing.T) {
+    // Arrange — the stream ends mid-test with no pass/fail/skip. This
+    // simulates a crashed test binary or truncated log.
+    input := `{"Action":"run","Package":"foo","Test":"TestCrashed"}`
+
+    // Act
+    report, err := goTestParser{}.Parse(strings.NewReader(input))
+    if err != nil {
+        t.Fatalf("Parse: %v", err)
+    }
+
+    // Assert
+    if len(report.Results) != 1 {
+        t.Fatalf("Results = %d, want 1", len(report.Results))
+    }
+    if report.Results[0].Status != ir.StatusError {
+        t.Errorf("Status = %v, want StatusError", report.Results[0].Status)
+    }
+}
+
+func TestGoTest_SkippedResultCarriesDetailAndMessage(t *testing.T) {
+    // Arrange — mixed.jsonl has TestPending with the skip reason in output.
+    data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "gotest", "mixed.jsonl"))
+    if err != nil {
+        t.Fatalf("read fixture: %v", err)
+    }
+
+    // Act
+    report, err := goTestParser{}.Parse(strings.NewReader(string(data)))
+    if err != nil {
+        t.Fatalf("Parse: %v", err)
+    }
+
+    // Assert
+    var pending ir.TestResult
+    for _, r := range report.Results {
+        if r.Name == "TestPending" {
+            pending = r
+        }
+    }
+    if pending.Status != ir.StatusSkipped {
+        t.Fatalf("TestPending status = %v, want skipped", pending.Status)
+    }
+    if !strings.Contains(pending.Detail, "not implemented yet") {
+        t.Errorf("Detail should include skip reason, got %q", pending.Detail)
+    }
+    if !strings.Contains(pending.Message, "not implemented yet") {
+        t.Errorf("Message should include skip reason, got %q", pending.Message)
+    }
+}
+
+func TestExtractGoTestLocation(t *testing.T) {
+    cases := []struct {
+        name     string
+        input    string
+        wantFile string
+        wantLine int
+        wantOK   bool
+    }{
+        {"typical failure line", "    foo_test.go:42: expected 2 got 3", "foo_test.go", 42, true},
+        {"path with slash", "    a/b/foo_test.go:10: msg", "a/b/foo_test.go", 10, true},
+        {"no match", "this has no location marker", "", 0, false},
+        {"missing suffix", "not a _test.go file:1: nope", "", 0, false},
+        {"empty", "", "", 0, false},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            f, l, ok := extractGoTestLocation(tc.input)
+            if f != tc.wantFile || l != tc.wantLine || ok != tc.wantOK {
+                t.Errorf("got (%q, %d, %v), want (%q, %d, %v)",
+                    f, l, ok, tc.wantFile, tc.wantLine, tc.wantOK)
+            }
+        })
+    }
+}
+
+// partialThenErrReader emits buf on the first Read, then returns err
+// on every subsequent Read. Deliberately different from
+// iotest.ErrReader (which always errors): we need a partial-then-error
+// sequence to exercise bufio.Scanner's post-scan error path, where the
+// scanner consumes the partial payload and then surfaces the error via
+// scanner.Err() after the loop. Do not "simplify" to iotest.ErrReader
+// — coverage of that branch would disappear.
+type partialThenErrReader struct {
+    buf  []byte
+    read bool
+    err  error
+}
+
+func (r *partialThenErrReader) Read(p []byte) (int, error) {
+    if !r.read {
+        n := copy(p, r.buf)
+        r.read = true
+        return n, nil
+    }
+    return 0, r.err
+}
+
+func TestGoTest_ScannerErrorSurfaces(t *testing.T) {
+    // Arrange — first Read returns a partial line (no newline), second
+    // Read returns a real error. bufio.Scanner surfaces the error via
+    // scanner.Err() after the loop.
+    boom := errors.New("io broke")
+    r := &partialThenErrReader{
+        buf: []byte(`{"Action":"run","Package":"foo","Test":"TestA"}`),
+        err: boom,
+    }
+
+    // Act
+    _, err := goTestParser{}.Parse(r)
+
+    // Assert
+    if err == nil {
+        t.Fatal("expected scan error to surface")
+    }
+    if !errors.Is(err, boom) {
+        t.Errorf("error should wrap %v, got %v", boom, err)
+    }
+}
+
+func TestFirstErrorLine(t *testing.T) {
+    cases := []struct {
+        name string
+        in   string
+        want string
+    }{
+        {"empty", "", ""},
+        {"only headers", "=== RUN   TestX\n--- PASS: TestX (0.00s)\n", ""},
+        {"strips location prefix", "    foo_test.go:42: expected 2 got 3\n", "expected 2 got 3"},
+        {"passes through plain line", "unexpected panic\n", "unexpected panic"},
+        {"location with nothing after keeps line", "    foo_test.go:42:\nmore text\n", "foo_test.go:42:"},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            if got := firstErrorLine(tc.in); got != tc.want {
+                t.Errorf("firstErrorLine(%q) = %q, want %q", tc.in, got, tc.want)
+            }
+        })
+    }
 }
