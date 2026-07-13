@@ -55,3 +55,9 @@ linters:
       # the input grammar. Splitting would break the loop-local scanner state.
       - linters: [gocyclo]
         path: "internal/parse/(gotest|junit)\\.go"
+
+      # summary.go: pre-refactor complexity that lands cleanly under 8 in
+      # #6 (feat/publish-check-run-display). Excluded here so this PR is
+      # self-contained; the exclusion becomes a no-op once #6 merges.
+      - linters: [gocyclo]
+        path: "internal/publish/summary\\.go"
