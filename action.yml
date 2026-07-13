@@ -1,9 +1,10 @@
-name: Publish Test Results
+name: jk-publish-test-results
 description: |
   Publishes multi-format test results as a drilldownable per-test check-run.
   Every test appears as a clickable annotation on the code diff and in the
   Checks tab. Consumes JUnit XML today; xUnit, NUnit, TRX, TAP, go test -json,
   Jest, Vitest, Cucumber, and SubUnit are planned.
+author: jedi-knights
 
 branding:
   icon: check-square
