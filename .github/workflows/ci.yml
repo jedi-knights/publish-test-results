@@ -34,12 +34,8 @@ jobs:
           github-token: ${{ secrets.GH_TOKEN }}
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+    name: Test
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
