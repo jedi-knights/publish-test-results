@@ -661,25 +661,6 @@ func TestBodyMarkdown_FailedTestShowsFileLine(t *testing.T) {
     }
 }
 
-func TestBodyMarkdown_TruncatesMultilineMessage(t *testing.T) {
-    // Arrange — a stack-trace style message must not bleed the whole
-    // trace into a single bullet.
-    results := []ir.TestResult{
-        {Suite: "s", Name: "TestX", Status: ir.StatusFailed, Message: "expected 1 got 2\ntraceback line 1\ntraceback line 2"},
-    }
-
-    // Act
-    md := BodyMarkdown(results)
-
-    // Assert
-    if !strings.Contains(md, "expected 1 got 2") {
-        t.Errorf("first line of message must be visible: %q", md)
-    }
-    if strings.Contains(md, "traceback line 1") {
-        t.Errorf("subsequent lines must be truncated from the bullet: %q", md)
-    }
-}
-
 func TestStatusIcon_AllArms(t *testing.T) {
     // Arrange
     cases := []struct {
@@ -1063,5 +1044,255 @@ func TestSummaryMarkdown_ContainsTotals(t *testing.T) {
     }
     if !strings.Contains(md, "| a |") || !strings.Contains(md, "| b |") {
         t.Errorf("missing suite rows: %q", md)
+    }
+}
+
+func TestCompute_AccumulatesDuration(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Status: ir.StatusPassed, Duration: 100 * time.Millisecond},
+        {Status: ir.StatusFailed, Duration: 250 * time.Millisecond},
+    }
+
+    // Act
+    got := Compute(results)
+
+    // Assert
+    if got.Duration != 350*time.Millisecond {
+        t.Errorf("Compute.Duration = %v, want 350ms", got.Duration)
+    }
+}
+
+func TestSummaryMarkdown_HasElapsedColumn(t *testing.T) {
+    // Arrange — two suites, each with a measurable duration; grand
+    // total must sum both suites.
+    results := []ir.TestResult{
+        {Suite: "fast", Status: ir.StatusPassed, Duration: 250 * time.Millisecond},
+        {Suite: "slow", Status: ir.StatusPassed, Duration: 3 * time.Second},
+    }
+
+    // Act
+    md := SummaryMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "Elapsed") {
+        t.Errorf("missing Elapsed column header: %q", md)
+    }
+    if !strings.Contains(md, "250ms") {
+        t.Errorf("missing sub-second per-suite elapsed: %q", md)
+    }
+    if !strings.Contains(md, "3.00s") {
+        t.Errorf("missing multi-second per-suite elapsed: %q", md)
+    }
+    // Grand total should sum 250ms + 3.00s = 3.25s.
+    if !strings.Contains(md, "3.25s") {
+        t.Errorf("missing grand-total elapsed: %q", md)
+    }
+}
+
+func TestFormatDuration_AllBranches(t *testing.T) {
+    // Arrange
+    cases := []struct {
+        name string
+        d    time.Duration
+        want string
+    }{
+        {"zero", 0, "—"},
+        {"sub-ms", 500 * time.Microsecond, "<1ms"},
+        {"ms", 250 * time.Millisecond, "250ms"},
+        {"seconds", 1234 * time.Millisecond, "1.23s"},
+        {"minutes", 65 * time.Second, "1m05s"},
+    }
+
+    // Act / Assert
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            if got := formatDuration(tc.d); got != tc.want {
+                t.Errorf("formatDuration(%v) = %q, want %q", tc.d, got, tc.want)
+            }
+        })
+    }
+}
+
+func TestBodyMarkdown_LinksFailedTestsWithSourceLinker(t *testing.T) {
+    // Arrange — when a linker is supplied, the File:Line locator must
+    // render as a Markdown link so the check page becomes click-to-source.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestBad", Status: ir.StatusFailed,
+            File: "foo/bar.go", Line: 42, Message: "boom"},
+    }
+    linker := func(file string, line int) string {
+        return fmt.Sprintf("https://example.test/%s#L%d", file, line)
+    }
+
+    // Act
+    md := BodyMarkdown(results, WithSourceLinker(linker))
+
+    // Assert
+    if !strings.Contains(md, "[foo/bar.go:42](https://example.test/foo/bar.go#L42)") {
+        t.Errorf("failed test should render as Markdown link: %q", md)
+    }
+}
+
+func TestBodyMarkdown_LinkerReturningEmptyKeepsPlainText(t *testing.T) {
+    // Arrange — a linker that refuses to build a URL (e.g. file lives
+    // outside the repo) must not corrupt the plain-text locator.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestBad", Status: ir.StatusFailed,
+            File: "external/foo.go", Line: 5, Message: "boom"},
+    }
+    linker := func(string, int) string { return "" }
+
+    // Act
+    md := BodyMarkdown(results, WithSourceLinker(linker))
+
+    // Assert
+    if !strings.Contains(md, "external/foo.go:5") {
+        t.Errorf("plain-text File:Line must still render: %q", md)
+    }
+    if strings.Contains(md, "](") {
+        t.Errorf("no link syntax should leak when linker returns empty: %q", md)
+    }
+}
+
+func TestBodyMarkdown_ShowsFullDetailInPerTestDetails(t *testing.T) {
+    // Arrange — a multi-line Detail must land inside a per-test
+    // <details> block so the bullet stays terse while the full trace
+    // is available on click.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestX", Status: ir.StatusFailed,
+            Message: "first line",
+            Detail:  "first line\nline 2\nline 3"},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "<details><summary>full output</summary>") {
+        t.Errorf("expected per-test <details> block: %q", md)
+    }
+    if !strings.Contains(md, "line 2") {
+        t.Errorf("full detail must appear inside <details>: %q", md)
+    }
+    if !strings.Contains(md, "line 3") {
+        t.Errorf("full detail must appear inside <details>: %q", md)
+    }
+}
+
+func TestBodyMarkdown_DetailFallsBackToMultilineMessage(t *testing.T) {
+    // Arrange — when Detail is empty but Message spans multiple lines,
+    // we still surface the extra lines in a <details> block so nothing
+    // is lost.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestX", Status: ir.StatusFailed,
+            Message: "first line\ntraceback line 1\ntraceback line 2"},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "<details><summary>full output</summary>") {
+        t.Errorf("expected per-test <details> block: %q", md)
+    }
+    if !strings.Contains(md, "traceback line 1") {
+        t.Errorf("full detail must appear inside <details>: %q", md)
+    }
+}
+
+func TestBodyMarkdown_NoDetailsForPassingTest(t *testing.T) {
+    // Arrange — a passing test with Detail should still not get a
+    // per-test <details> block; the block is a failure-triage aid.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestOK", Status: ir.StatusPassed,
+            Detail: "irrelevant stdout"},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if strings.Contains(md, "<details><summary>full output") {
+        t.Errorf("passing tests must not carry per-test <details>: %q", md)
+    }
+}
+
+func TestBodyMarkdown_TruncatesMultilineMessage(t *testing.T) {
+    // Arrange — stack-trace style message; the bullet must show only
+    // the first line while the details block carries the rest.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "TestX", Status: ir.StatusFailed,
+            Message: "expected 1 got 2\ntraceback line 1\ntraceback line 2"},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    bulletEnd := strings.Index(md, "<details>")
+    if bulletEnd < 0 {
+        t.Fatalf("expected details block after bullet: %q", md)
+    }
+    bullet := md[:bulletEnd]
+    if !strings.Contains(bullet, "expected 1 got 2") {
+        t.Errorf("bullet must show first message line: %q", bullet)
+    }
+    if strings.Contains(bullet, "traceback line 1") {
+        t.Errorf("bullet must not bleed subsequent lines: %q", bullet)
+    }
+    if !strings.Contains(md, "traceback line 1") {
+        t.Errorf("full trace must appear inside details block: %q", md)
+    }
+}
+
+func TestGitHubBlobLinker_BuildsExpectedURL(t *testing.T) {
+    // Arrange
+    linker := GitHubBlobLinker("o", "r", "deadbeef")
+
+    // Act
+    got := linker("internal/foo.go", 42)
+
+    // Assert
+    want := "https://github.com/o/r/blob/deadbeef/internal/foo.go#L42"
+    if got != want {
+        t.Errorf("linker = %q, want %q", got, want)
+    }
+}
+
+func TestGitHubBlobLinker_EmptyArgsReturnsNoOp(t *testing.T) {
+    // Arrange — a missing owner/repo/sha must produce a no-op linker
+    // so downstream rendering falls back to plain text safely.
+    cases := []struct {
+        name       string
+        o, r, sha  string
+    }{
+        {"no owner", "", "r", "sha"},
+        {"no repo", "o", "", "sha"},
+        {"no sha", "o", "r", ""},
+    }
+
+    // Act / Assert
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            got := GitHubBlobLinker(tc.o, tc.r, tc.sha)("foo.go", 1)
+            if got != "" {
+                t.Errorf("GitHubBlobLinker(%q,%q,%q) returned %q, want empty",
+                    tc.o, tc.r, tc.sha, got)
+            }
+        })
+    }
+}
+
+func TestGitHubBlobLinker_LineZeroOmitsFragment(t *testing.T) {
+    // Arrange
+    linker := GitHubBlobLinker("o", "r", "sha")
+
+    // Act
+    got := linker("foo.go", 0)
+
+    // Assert
+    if strings.Contains(got, "#L") {
+        t.Errorf("line 0 must not produce a #L fragment: %q", got)
     }
 }

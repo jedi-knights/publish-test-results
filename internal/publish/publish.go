@@ -34,7 +34,7 @@ func Publish(ctx context.Context, client *Client, cfg Config, results []ir.TestR
     output := Output{
         Title:   Title(totals),
         Summary: SummaryMarkdown(results),
-        Text:    BodyMarkdown(results),
+        Text:    BodyMarkdown(results, WithSourceLinker(GitHubBlobLinker(client.Owner, client.Repo, cfg.HeadSHA))),
     }
     if len(batches) > 0 {
         output.Annotations = batches[0]
