@@ -7,7 +7,7 @@ per-test check-run.
 ![Release](https://github.com/jedi-knights/publish-test-results/actions/workflows/release.yml/badge.svg)
 ![GoReleaser](https://github.com/jedi-knights/publish-test-results/actions/workflows/goreleaser.yml/badge.svg)
 ![Badge](https://github.com/jedi-knights/publish-test-results/actions/workflows/badge.yml/badge.svg)
-[![Coverage](https://img.shields.io/badge/Coverage-97.4%25-brightgreen)](https://jedi-knights.github.io/publish-test-results/?v=5)
+[![Coverage](https://img.shields.io/badge/Coverage-97.4%25-brightgreen)](https://jedi-knights.github.io/publish-test-results/?v=6)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Status: work in progress.** The scaffolding, intermediate representation,
