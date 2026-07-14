@@ -236,11 +236,14 @@ func groupBySuite(results []ir.TestResult) (order []string, per map[string][]ir.
     return order, per
 }
 
-// writeSuite emits the heading, then the non-pass and pass blocks for
-// one suite. Fully-passing suites still list every test — the earlier
-// one-line summary hid audit detail readers wanted.
+// writeSuite wraps every suite in a collapsed <details> so the reader
+// can expand only the suites they care about. The summary shows
+// per-status counts (passed + failed always, errored + skipped only
+// when non-zero) so the reader can judge at a glance which suites
+// need a click. Mixed suites keep their inner <details> around the
+// passing block, nested inside the outer one.
 func writeSuite(b *strings.Builder, name string, rs []ir.TestResult, linker SourceLinker) {
-    fmt.Fprintf(b, "### %s (%d %s)\n\n", name, len(rs), pluralTest(len(rs)))
+    fmt.Fprintf(b, "<details><summary>%s (%s)</summary>\n\n", name, suiteSummary(rs))
     nonPass, passed := partitionByStatus(rs)
 
     if len(nonPass) == 0 {
@@ -248,7 +251,7 @@ func writeSuite(b *strings.Builder, name string, rs []ir.TestResult, linker Sour
             return passed[i].Name < passed[j].Name
         })
         writeBlock(b, passed, linker)
-        b.WriteString("\n")
+        b.WriteString("\n</details>\n\n")
         return
     }
 
@@ -270,7 +273,29 @@ func writeSuite(b *strings.Builder, name string, rs []ir.TestResult, linker Sour
         writeBlock(b, passed, linker)
         b.WriteString("\n</details>\n")
     }
-    b.WriteString("\n")
+    b.WriteString("\n</details>\n\n")
+}
+
+// suiteSummary renders the per-status count line shown inside each
+// suite's <summary>. Passed + failed appear always so the reader has
+// a stable frame of reference; errored + skipped are elided at zero
+// to keep the header compact.
+func suiteSummary(rs []ir.TestResult) string {
+    var t Totals
+    for _, r := range rs {
+        addStatusToTotals(&t, r.Status)
+    }
+    parts := []string{
+        fmt.Sprintf("%d passed", t.Passed),
+        fmt.Sprintf("%d failed", t.Failed),
+    }
+    if t.Errored > 0 {
+        parts = append(parts, fmt.Sprintf("%d errored", t.Errored))
+    }
+    if t.Skipped > 0 {
+        parts = append(parts, fmt.Sprintf("%d skipped", t.Skipped))
+    }
+    return strings.Join(parts, ", ")
 }
 
 // partitionByStatus splits results into the non-passing and passing
