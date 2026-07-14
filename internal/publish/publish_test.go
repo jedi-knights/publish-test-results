@@ -468,10 +468,10 @@ func TestBodyMarkdown_UnspecifiedSuite(t *testing.T) {
     }
 }
 
-func TestBodyMarkdown_AllPassSuiteCollapsesToOneLine(t *testing.T) {
-    // Arrange — 21 all-passing tests. Instead of 21 bullets of noise,
-    // the render should compress to a single "all N tests passed" line
-    // because none of the entries deserve individual attention.
+func TestBodyMarkdown_AllPassSuiteListsEveryTest(t *testing.T) {
+    // Arrange — 21 all-passing tests. The reader wants to see every
+    // name so a run is auditable; the "all N passed" one-liner hid
+    // detail that turned out to be load-bearing.
     results := make([]ir.TestResult, 21)
     for i := range results {
         results[i] = ir.TestResult{Suite: "big", Name: fmt.Sprintf("t%d", i), Status: ir.StatusPassed}
@@ -480,13 +480,16 @@ func TestBodyMarkdown_AllPassSuiteCollapsesToOneLine(t *testing.T) {
     // Act
     md := BodyMarkdown(results)
 
-    // Assert
-    if !strings.Contains(md, "all 21 tests passed") {
-        t.Errorf("all-pass suite should collapse to summary line: %q", md)
+    // Assert — every individual test must appear as a bullet, and
+    // the summary-line short-circuit must be gone.
+    for i := range results {
+        want := fmt.Sprintf("`t%d`", i)
+        if !strings.Contains(md, want) {
+            t.Errorf("missing test %s in body: %q", want, md)
+        }
     }
-    // No individual bullets should leak through.
-    if strings.Contains(md, "`t0`") {
-        t.Errorf("individual test bullets must be hidden in all-pass suite: %q", md)
+    if strings.Contains(md, "all 21 tests passed") {
+        t.Errorf("all-pass summary short-circuit must not fire: %q", md)
     }
 }
 

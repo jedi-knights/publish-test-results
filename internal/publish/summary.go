@@ -150,11 +150,11 @@ func addTotals(grand, t *Totals) {
     grand.Total += t.Total
 }
 
-// BodyMarkdown renders the per-test detail below the summary. All-pass
-// suites collapse to a single "all N tests passed" line to keep the
-// happy path scannable; mixed suites list failures/errors/skips at
-// the top and hide the passing tests inside a details block so the
-// eye lands on what actually needs attention.
+// BodyMarkdown renders the per-test detail below the summary. Every
+// test is listed as a bullet — the earlier "all N passed" summary
+// line hid detail readers wanted to audit. Mixed suites still list
+// failures/errors/skips at the top and hide the passing tests inside
+// a details block so the eye lands on what needs attention.
 func BodyMarkdown(results []ir.TestResult) string {
     order, bySuite := groupBySuite(results)
     prefix := commonSuitePrefix(order)
@@ -182,13 +182,18 @@ func groupBySuite(results []ir.TestResult) (order []string, per map[string][]ir.
 }
 
 // writeSuite emits the heading, then the non-pass and pass blocks for
-// one suite. Fully-passing suites collapse to a single line.
+// one suite. Fully-passing suites still list every test — the earlier
+// one-line summary hid audit detail readers wanted.
 func writeSuite(b *strings.Builder, name string, rs []ir.TestResult) {
     fmt.Fprintf(b, "### %s (%d %s)\n\n", name, len(rs), pluralTest(len(rs)))
     nonPass, passed := partitionByStatus(rs)
 
     if len(nonPass) == 0 {
-        fmt.Fprintf(b, "- ✅ all %d %s passed\n\n", len(rs), pluralTest(len(rs)))
+        sort.SliceStable(passed, func(i, j int) bool {
+            return passed[i].Name < passed[j].Name
+        })
+        writeBlock(b, passed)
+        b.WriteString("\n")
         return
     }
 
