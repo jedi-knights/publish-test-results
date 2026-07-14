@@ -8,7 +8,11 @@ name: GoReleaser
 on:
   push:
     tags:
-      - "v*"
+      # Match semver release tags (v0.1.3, v1.0.0, v0.1.3-alpha.1) so the
+      # major-only floating tags we force-push at the end of this workflow
+      # (v0, v1) do not re-trigger it. Two literal dots pattern-out anything
+      # without a minor+patch component.
+      - "v*.*.*"
 
 permissions:
   contents: write
