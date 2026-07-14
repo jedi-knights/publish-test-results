@@ -2,27 +2,32 @@ package publish
 
 import (
     "fmt"
+    "html"
     "sort"
     "strings"
+    "time"
 
     "github.com/jedi-knights/publish-test-results/internal/ir"
 )
 
-// Totals holds the aggregate outcome counts used in the check-run
-// title, summary line, and conclusion.
+// Totals holds the aggregate outcome counts and elapsed time used in
+// the check-run title, summary line, and conclusion.
 type Totals struct {
-    Passed  int
-    Failed  int
-    Skipped int
-    Errored int
-    Total   int
+    Passed   int
+    Failed   int
+    Skipped  int
+    Errored  int
+    Total    int
+    Duration time.Duration
 }
 
-// Compute walks results once and folds the per-status counts.
+// Compute walks results once and folds the per-status counts plus the
+// total elapsed time.
 func Compute(results []ir.TestResult) Totals {
     var t Totals
     for _, r := range results {
         t.Total++
+        t.Duration += r.Duration
         addStatusToTotals(&t, r.Status)
     }
     return t
@@ -71,7 +76,8 @@ func failureTitle(t Totals) string {
 
 // SummaryMarkdown renders a compact glance bar plus a per-suite count
 // table. The glance bar sits at the top so an at-a-glance reader can
-// judge the run in one line; the table gives the per-suite breakdown.
+// judge the run in one line; the table gives the per-suite breakdown
+// plus an Elapsed column so slow suites are visible on a green run.
 // Suite names share their longest common slash-terminated prefix
 // stripped so the Suite column stays readable when every row is under
 // the same Go module.
@@ -84,22 +90,25 @@ func SummaryMarkdown(results []ir.TestResult) string {
         b.WriteString(bar)
         b.WriteString("\n\n")
     }
-    b.WriteString("| Suite | Passed | Failed | Errored | Skipped | Total |\n")
-    b.WriteString("|---|---|---|---|---|---|\n")
+    b.WriteString("| Suite | Passed | Failed | Errored | Skipped | Total | Elapsed |\n")
+    b.WriteString("|---|---|---|---|---|---|---|\n")
     grand := Totals{}
     for _, name := range order {
         t := perSuite[name]
-        fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d |\n",
-            trimSuite(name, prefix), t.Passed, t.Failed, t.Errored, t.Skipped, t.Total)
+        fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d | %s |\n",
+            trimSuite(name, prefix), t.Passed, t.Failed, t.Errored, t.Skipped, t.Total,
+            formatDuration(t.Duration))
         addTotals(&grand, t)
     }
-    fmt.Fprintf(&b, "| **Total** | **%d** | **%d** | **%d** | **%d** | **%d** |\n",
-        grand.Passed, grand.Failed, grand.Errored, grand.Skipped, grand.Total)
+    fmt.Fprintf(&b, "| **Total** | **%d** | **%d** | **%d** | **%d** | **%d** | **%s** |\n",
+        grand.Passed, grand.Failed, grand.Errored, grand.Skipped, grand.Total,
+        formatDuration(grand.Duration))
     return b.String()
 }
 
 // tallyBySuite groups results by suite, folding per-status counters
-// as it walks. Suite names are returned in stable alphabetical order.
+// and elapsed time as it walks. Suite names are returned in stable
+// alphabetical order.
 func tallyBySuite(results []ir.TestResult) (order []string, per map[string]*Totals) {
     per = map[string]*Totals{}
     for _, r := range results {
@@ -111,6 +120,7 @@ func tallyBySuite(results []ir.TestResult) (order []string, per map[string]*Tota
             order = append(order, name)
         }
         agg.Total++
+        agg.Duration += r.Duration
         addStatusToTotals(agg, r.Status)
     }
     sort.Strings(order)
@@ -148,20 +158,65 @@ func addTotals(grand, t *Totals) {
     grand.Errored += t.Errored
     grand.Skipped += t.Skipped
     grand.Total += t.Total
+    grand.Duration += t.Duration
+}
+
+// SourceLinker maps a (file, line) pair to a URL, or returns "" when
+// no link should be produced (e.g. the path lives outside the repo).
+type SourceLinker func(file string, line int) string
+
+// BodyOption tunes BodyMarkdown behavior. The zero-option call keeps
+// the plain-text rendering; each option composes into a bodyConfig.
+type BodyOption func(*bodyConfig)
+
+type bodyConfig struct {
+    linker SourceLinker
+}
+
+// WithSourceLinker wires a SourceLinker so failed-test File:Line
+// suffixes render as clickable Markdown links.
+func WithSourceLinker(fn SourceLinker) BodyOption {
+    return func(c *bodyConfig) { c.linker = fn }
+}
+
+// GitHubBlobLinker returns a SourceLinker that points at
+// github.com/<owner>/<repo>/blob/<sha>/<file>#L<line>. Any missing
+// input yields a no-op linker so the caller can wire it up
+// unconditionally and still fall back to plain text when the
+// coordinates are incomplete.
+func GitHubBlobLinker(owner, repo, sha string) SourceLinker {
+    if owner == "" || repo == "" || sha == "" {
+        return func(string, int) string { return "" }
+    }
+    return func(file string, line int) string {
+        if file == "" {
+            return ""
+        }
+        frag := ""
+        if line > 0 {
+            frag = fmt.Sprintf("#L%d", line)
+        }
+        return fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s%s", owner, repo, sha, file, frag)
+    }
 }
 
 // BodyMarkdown renders the per-test detail below the summary. Every
-// test is listed as a bullet — the earlier "all N passed" summary
-// line hid detail readers wanted to audit. Mixed suites still list
-// failures/errors/skips at the top and hide the passing tests inside
-// a details block so the eye lands on what needs attention.
-func BodyMarkdown(results []ir.TestResult) string {
+// test is listed as a bullet; mixed suites list failures/errors/skips
+// first and hide passing tests inside a details block. Options tune
+// rendering — pass WithSourceLinker to make failure File:Line into a
+// clickable link.
+func BodyMarkdown(results []ir.TestResult, opts ...BodyOption) string {
+    var cfg bodyConfig
+    for _, o := range opts {
+        o(&cfg)
+    }
+
     order, bySuite := groupBySuite(results)
     prefix := commonSuitePrefix(order)
 
     var b strings.Builder
     for _, name := range order {
-        writeSuite(&b, trimSuite(name, prefix), bySuite[name])
+        writeSuite(&b, trimSuite(name, prefix), bySuite[name], cfg.linker)
     }
     return b.String()
 }
@@ -184,7 +239,7 @@ func groupBySuite(results []ir.TestResult) (order []string, per map[string][]ir.
 // writeSuite emits the heading, then the non-pass and pass blocks for
 // one suite. Fully-passing suites still list every test — the earlier
 // one-line summary hid audit detail readers wanted.
-func writeSuite(b *strings.Builder, name string, rs []ir.TestResult) {
+func writeSuite(b *strings.Builder, name string, rs []ir.TestResult, linker SourceLinker) {
     fmt.Fprintf(b, "### %s (%d %s)\n\n", name, len(rs), pluralTest(len(rs)))
     nonPass, passed := partitionByStatus(rs)
 
@@ -192,7 +247,7 @@ func writeSuite(b *strings.Builder, name string, rs []ir.TestResult) {
         sort.SliceStable(passed, func(i, j int) bool {
             return passed[i].Name < passed[j].Name
         })
-        writeBlock(b, passed)
+        writeBlock(b, passed, linker)
         b.WriteString("\n")
         return
     }
@@ -204,7 +259,7 @@ func writeSuite(b *strings.Builder, name string, rs []ir.TestResult) {
         }
         return a.Name < c.Name
     })
-    writeBlock(b, nonPass)
+    writeBlock(b, nonPass, linker)
 
     if len(passed) > 0 {
         fmt.Fprintf(b, "\n<details><summary>%d passed %s</summary>\n\n",
@@ -212,7 +267,7 @@ func writeSuite(b *strings.Builder, name string, rs []ir.TestResult) {
         sort.SliceStable(passed, func(i, j int) bool {
             return passed[i].Name < passed[j].Name
         })
-        writeBlock(b, passed)
+        writeBlock(b, passed, linker)
         b.WriteString("\n</details>\n")
     }
     b.WriteString("\n")
@@ -233,34 +288,77 @@ func partitionByStatus(rs []ir.TestResult) (nonPass, passed []ir.TestResult) {
 
 // writeBlock renders a set of results as a bullet list, nesting
 // subtests under their parent when both live in the same block.
-func writeBlock(b *strings.Builder, rs []ir.TestResult) {
+func writeBlock(b *strings.Builder, rs []ir.TestResult, linker SourceLinker) {
     present := make(map[string]bool, len(rs))
     for _, r := range rs {
         present[r.Name] = true
     }
     for _, r := range rs {
-        b.WriteString(renderTestLine(r, nestingDepth(r.Name, present)))
+        b.WriteString(renderTestLine(r, nestingDepth(r.Name, present), linker))
         b.WriteString("\n")
     }
 }
 
-// renderTestLine formats one test as a single markdown bullet, indented
-// by depth. Failures append a `File:Line` locator and the first line
-// of the failure message so multi-line stack traces don't bleed into
-// the bullet.
-func renderTestLine(r ir.TestResult, depth int) string {
+// renderTestLine formats one test as a Markdown bullet, indented by
+// depth. Failures append a File:Line locator (linked when a
+// SourceLinker is set), the first line of the failure message, and
+// — when there is more to show — a nested <details> block with the
+// full trace so the bullet stays terse.
+func renderTestLine(r ir.TestResult, depth int, linker SourceLinker) string {
     var b strings.Builder
-    b.WriteString(strings.Repeat("  ", depth))
+    indent := strings.Repeat("  ", depth)
+    b.WriteString(indent)
     fmt.Fprintf(&b, "- %s `%s`", statusIcon(r.Status), r.Name)
-    if r.Status != ir.StatusPassed {
-        if r.File != "" {
-            fmt.Fprintf(&b, " — %s", locString(r.File, r.Line))
-        }
-        if msg := firstLine(r.Message); msg != "" {
-            fmt.Fprintf(&b, " — %s", msg)
-        }
+    if r.Status == ir.StatusPassed {
+        return b.String()
+    }
+    if r.File != "" {
+        fmt.Fprintf(&b, " — %s", locSuffix(r.File, r.Line, linker))
+    }
+    if msg := firstLine(r.Message); msg != "" {
+        fmt.Fprintf(&b, " — %s", msg)
+    }
+    if detail := fullDetail(r); detail != "" {
+        fmt.Fprintf(&b, "\n%s  <details><summary>full output</summary><pre>%s</pre></details>",
+            indent, encodeInlinePre(detail))
     }
     return b.String()
+}
+
+// locSuffix returns the File:Line string, wrapped as a Markdown link
+// when the linker resolves to a non-empty URL.
+func locSuffix(file string, line int, linker SourceLinker) string {
+    text := locString(file, line)
+    if linker == nil {
+        return text
+    }
+    url := linker(file, line)
+    if url == "" {
+        return text
+    }
+    return fmt.Sprintf("[%s](%s)", text, url)
+}
+
+// fullDetail picks the best "full trace" source for a failing test.
+// Detail (when set) is preferred because parsers populate it with the
+// producer's raw output; otherwise fall back to a multi-line Message
+// so nothing after the first line is silently dropped.
+func fullDetail(r ir.TestResult) string {
+    if r.Detail != "" {
+        return r.Detail
+    }
+    if strings.Contains(r.Message, "\n") {
+        return r.Message
+    }
+    return ""
+}
+
+// encodeInlinePre HTML-escapes s and replaces newlines with the
+// numeric entity so the whole block can sit on one physical line
+// (avoiding list-item continuation issues) and still render as a
+// multi-line <pre> block on GitHub.
+func encodeInlinePre(s string) string {
+    return strings.ReplaceAll(html.EscapeString(s), "\n", "&#10;")
 }
 
 func statusIcon(s ir.Status) string {
@@ -405,6 +503,28 @@ func pluralTest(n int) string {
         return "test"
     }
     return "tests"
+}
+
+// formatDuration renders a duration compactly for the Elapsed column
+// so the table stays readable across four orders of magnitude:
+// zero renders as an em-dash placeholder, sub-millisecond as "<1ms",
+// milliseconds as an integer count, seconds as two decimals, and
+// minutes as m+ss.
+func formatDuration(d time.Duration) string {
+    switch {
+    case d == 0:
+        return "—"
+    case d < time.Millisecond:
+        return "<1ms"
+    case d < time.Second:
+        return fmt.Sprintf("%dms", d.Milliseconds())
+    case d < time.Minute:
+        return fmt.Sprintf("%.2fs", d.Seconds())
+    default:
+        m := int(d / time.Minute)
+        s := int((d % time.Minute) / time.Second)
+        return fmt.Sprintf("%dm%02ds", m, s)
+    }
 }
 
 // locString formats a file location; Line == 0 is treated as unknown
