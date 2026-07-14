@@ -578,8 +578,89 @@ func TestBodyMarkdown_TrimsCommonModulePrefix(t *testing.T) {
     if strings.Contains(md, "github.com/o/r/") {
         t.Errorf("common prefix must be stripped from headings: %q", md)
     }
-    if !strings.Contains(md, "### cmd/tool ") || !strings.Contains(md, "### internal/a ") {
-        t.Errorf("trimmed suite headings missing: %q", md)
+    if !strings.Contains(md, "<summary>cmd/tool ") || !strings.Contains(md, "<summary>internal/a ") {
+        t.Errorf("trimmed suite headings missing from <summary> lines: %q", md)
+    }
+}
+
+func TestBodyMarkdown_EachSuiteIsCollapsedByDefault(t *testing.T) {
+    // Arrange — two independent suites; each must be wrapped in its
+    // own <details> so the reader can expand only what interests them.
+    results := []ir.TestResult{
+        {Suite: "suite-a", Name: "T1", Status: ir.StatusPassed},
+        {Suite: "suite-b", Name: "T2", Status: ir.StatusPassed},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert — one <details> open per suite, plus one close each.
+    if got := strings.Count(md, "<details>"); got != 2 {
+        t.Errorf("expected 2 <details> opens (one per suite), got %d in %q", got, md)
+    }
+    if got := strings.Count(md, "</details>"); got != 2 {
+        t.Errorf("expected 2 </details> closes (one per suite), got %d in %q", got, md)
+    }
+    if !strings.Contains(md, "<summary>suite-a ") || !strings.Contains(md, "<summary>suite-b ") {
+        t.Errorf("expected each suite name to appear inside a <summary>: %q", md)
+    }
+}
+
+func TestBodyMarkdown_SuiteSummaryShowsPassedAndFailed(t *testing.T) {
+    // Arrange
+    results := []ir.TestResult{
+        {Suite: "s", Name: "A", Status: ir.StatusPassed},
+        {Suite: "s", Name: "B", Status: ir.StatusPassed},
+        {Suite: "s", Name: "C", Status: ir.StatusFailed, Message: "boom"},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "<summary>s (2 passed, 1 failed)</summary>") {
+        t.Errorf("expected suite summary '2 passed, 1 failed': %q", md)
+    }
+}
+
+func TestBodyMarkdown_SuiteSummaryAddsErroredAndSkippedWhenPresent(t *testing.T) {
+    // Arrange — errored and skipped counts must surface in the header
+    // when nonzero so the reader knows what shape of failure to click
+    // into.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "A", Status: ir.StatusPassed},
+        {Suite: "s", Name: "B", Status: ir.StatusFailed, Message: "boom"},
+        {Suite: "s", Name: "C", Status: ir.StatusError, Message: "crash"},
+        {Suite: "s", Name: "D", Status: ir.StatusSkipped},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    want := "<summary>s (1 passed, 1 failed, 1 errored, 1 skipped)</summary>"
+    if !strings.Contains(md, want) {
+        t.Errorf("expected suite summary %q, got: %q", want, md)
+    }
+}
+
+func TestBodyMarkdown_SuiteSummaryOmitsZeroErroredAndSkipped(t *testing.T) {
+    // Arrange — an all-pass suite should still surface passed + failed
+    // even when both other statuses are zero, but must not clutter the
+    // header with `0 errored, 0 skipped`.
+    results := []ir.TestResult{
+        {Suite: "s", Name: "A", Status: ir.StatusPassed},
+    }
+
+    // Act
+    md := BodyMarkdown(results)
+
+    // Assert
+    if !strings.Contains(md, "<summary>s (1 passed, 0 failed)</summary>") {
+        t.Errorf("expected '1 passed, 0 failed' summary: %q", md)
+    }
+    if strings.Contains(md, "0 errored") || strings.Contains(md, "0 skipped") {
+        t.Errorf("zero errored/skipped counts must be elided: %q", md)
     }
 }
 
@@ -1229,12 +1310,13 @@ func TestBodyMarkdown_TruncatesMultilineMessage(t *testing.T) {
     // Act
     md := BodyMarkdown(results)
 
-    // Assert
-    bulletEnd := strings.Index(md, "<details>")
-    if bulletEnd < 0 {
-        t.Fatalf("expected details block after bullet: %q", md)
+    // Assert — the per-test <details><summary>full output block
+    // carries the trace; the bullet above it shows only line one.
+    fullOutputIdx := strings.Index(md, "<details><summary>full output")
+    if fullOutputIdx < 0 {
+        t.Fatalf("expected per-test <details> block: %q", md)
     }
-    bullet := md[:bulletEnd]
+    bullet := md[:fullOutputIdx]
     if !strings.Contains(bullet, "expected 1 got 2") {
         t.Errorf("bullet must show first message line: %q", bullet)
     }
