@@ -37,3 +37,24 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      # Marketplace consumers reference the major-only tag (@v0, @v1) so
+      # they float onto every patch/minor within that major automatically.
+      # We re-point that tag at the just-released commit on every push of
+      # a v<major>.<minor>.<patch> tag.
+      - name: Update floating major tag
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          full="${GITHUB_REF#refs/tags/}"       # v0.1.2
+          major="${full%%.*}"                    # v0
+          # Skip pre-releases and anything that isn't a clean v<major>.<minor>.<patch>.
+          if [[ ! "$full" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Not a semver release tag ($full), skipping floating-tag update."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f "$major" "$GITHUB_SHA"
+          git push origin -f "refs/tags/$major"
