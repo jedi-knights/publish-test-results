@@ -4,6 +4,7 @@ dist/
 *.exe
 *.test
 *.out
+/publish-test-results
 
 # Coverage
 coverage.txt
